@@ -145,8 +145,10 @@ export default function App() {
           originalLog.apply(console, args);
         };
 
-        const jarUrl = window.location.origin + import.meta.env.BASE_URL + "webcomparer.jar";
-        window.cheerpjRunMain("com.jarcompare.WebJarComparer", jarUrl, "/str/jar1.jar", "/str/jar2.jar")
+        // CheerpJ's /app mount maps to the web-server root, so include the
+        // GitHub Pages base path (e.g. /jar-compare/) to reach the JAR.
+        const jarPath = "/app" + import.meta.env.BASE_URL + "webcomparer.jar";
+        window.cheerpjRunMain("com.jarcompare.WebJarComparer", jarPath, "/str/jar1.jar", "/str/jar2.jar")
           .then((exitCode) => {
             console.log = originalLog;
             if (exitCode !== 0 && !capturedJson) {
