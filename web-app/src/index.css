@@ -165,6 +165,36 @@ body {
   flex-shrink: 0;
 }
 
+/* ── Mode tabs (Compare / Decompile) ────────────────────────────────────── */
+.mode-tabs {
+  display: flex;
+  gap: 2px;
+  margin-left: 0.75rem;
+  padding-left: 0.75rem;
+  border-left: 1px solid var(--border);
+}
+
+.mode-tab {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 0.28rem 0.8rem;
+  font-family: var(--font-sans);
+  font-size: 0.82rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+
+.mode-tab:hover { color: var(--text); background: var(--surface-2); }
+
+.mode-tab.active {
+  color: var(--accent);
+  background: var(--accent-subtle);
+  border-color: var(--accent);
+}
+
 /* ── Buttons ────────────────────────────────────────────────────────────── */
 .btn {
   display: inline-flex;
@@ -189,6 +219,8 @@ body {
   font-size: 0.9rem;
 }
 .btn-primary:hover:not(:disabled) { filter: brightness(1.1); }
+
+.btn-sm { padding: 0.3rem 0.75rem; font-size: 0.82rem; }
 
 .btn-ghost {
   background: transparent;
@@ -289,6 +321,9 @@ body {
   border-style: solid;
   background: var(--green-bg);
 }
+
+/* single dropzone (decompile mode) doesn't need to share a row */
+.dropzone--single { max-width: 420px; margin: 0 auto; }
 
 .dropzone input[type="file"] { display: none; }
 
@@ -567,6 +602,18 @@ body {
 .diff-body {
   flex: 1;
   overflow: auto;
+}
+
+/* single-file source viewer (decompile mode) */
+.source-view {
+  margin: 0;
+  padding: 1rem 1.25rem;
+  font-family: var(--font-mono);
+  font-size: 0.82rem;
+  line-height: 1.55;
+  color: var(--text);
+  white-space: pre;
+  tab-size: 4;
 }
 
 .alert-banner {

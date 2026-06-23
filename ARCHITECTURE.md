@@ -1,6 +1,11 @@
 # Client-Side JAR Comparer Architecture
 
-This diagram illustrates the flow of data and execution inside the completely client-side JAR comparing application. It highlights how the React frontend interacts with the Java backend logic running natively in the browser via WebAssembly (CheerpJ).
+This diagram illustrates the flow of data and execution inside the completely client-side JAR application. It highlights how the React frontend interacts with the Java backend logic running natively in the browser via WebAssembly (CheerpJ).
+
+The app has **two modes** sharing the same engine (`webcomparer.jar`) and the same console-hook IPC:
+
+- **Compare** → `WebJarComparer` diffs two JARs and returns a JSON diff.
+- **Decompile** → `WebJarDecompiler` decompiles one JAR to source + resources, which the UI repackages into a downloadable `.zip` (via JSZip).
 
 ```mermaid
 flowchart TD
@@ -21,10 +26,11 @@ flowchart TD
         end
 
         subgraph CheerpJ["CheerpJ WebAssembly Runtime"]
-            VFS["Virtual File System\n(/str/jar1.jar, /str/jar2.jar)"]:::wasm
+            VFS["Virtual File System\n(/str/*.jar)"]:::wasm
             
             subgraph JavaBackend["Java Logic (webcomparer.jar)"]
-                Main["WebJarComparer\n(Main Entrypoint)"]:::java
+                Compare["WebJarComparer\n(Compare entrypoint)"]:::java
+                Decompile["WebJarDecompiler\n(Decompile entrypoint)"]:::java
                 ZipExtract["ZIP Extractor\n(Recursive Extraction)"]:::java
                 CFR["CFR Decompiler\n(Bytecode -> Source)"]:::java
                 Gson["Gson\n(Data Serialization)"]:::java
@@ -33,20 +39,26 @@ flowchart TD
     end
 
     %% Flow
-    User -- "Uploads 2 JARs" --> UI
+    User -- "Uploads JAR(s)" --> UI
     UI -- "Converts to arrayBuffer" --> VFS
-    UI -- "Invokes cheerpjRunMain" --> Main
+    UI -- "cheerpjRunMain (Compare mode)" --> Compare
+    UI -- "cheerpjRunMain (Decompile mode)" --> Decompile
+
+    Compare -- "Reads from" --> VFS
+    Decompile -- "Reads from" --> VFS
+    Compare -- "Extracts .class & nested .jar" --> ZipExtract
+    Decompile -- "Extracts all entries" --> ZipExtract
+    ZipExtract -- "Passes classes" --> CFR
+    CFR -- "Returns decompiled Java strings" --> Compare
+    CFR -- "Returns decompiled Java strings" --> Decompile
     
-    Main -- "Reads from" --> VFS
-    Main -- "Extracts .class & nested .jar" --> ZipExtract
-    ZipExtract -- "Passes modified classes" --> CFR
-    CFR -- "Returns decompiled Java strings" --> Main
-    
-    Main -- "Constructs diff payload" --> Gson
+    Compare -- "Constructs diff payload" --> Gson
+    Decompile -- "Constructs files payload" --> Gson
     Gson -- "Emits JSON_RESULT via System.out.println" --> LogInterceptor
     
-    LogInterceptor -- "Parses State (DiffResult)" --> UI
-    UI -- "Renders File Tree" --> ReactDiff
+    LogInterceptor -- "Parses State" --> UI
+    UI -- "Compare: renders diff" --> ReactDiff
+    UI -- "Decompile: JSZip → .zip download" --> User
     ReactDiff -- "Displays Code" --> User
 
 ```
@@ -57,3 +69,5 @@ flowchart TD
 2. **Virtual File System (VFS)**: CheerpJ exposes a virtual file system (`window.cheerpOSAddStringFile`). React converts the HTML5 `File` objects into `Uint8Array` buffers and mounts them into the VFS where standard Java `java.io.File` APIs can interact with them.
 3. **IPC via Console Hooking**: Because calling complex Java objects from JavaScript requires heavy JNI-like bindings, this application uses a simpler Inter-Process Communication (IPC) method. The React app overrides `console.log` right before invoking the Java Main class. The Java backend serializes its entire output into JSON, sandwiches it between `JSON_RESULT_START` and `JSON_RESULT_END` flags, and `System.out.println`s it. React parses this block and restores the console hook.
 4. **Recursive Unpacking**: The Java logic automatically handles nested JARs (like Spring Boot `BOOT-INF/lib` contents) by unzipping them to virtual temporary directories (`Files.createTempDirectory`) before running the CFR Decompiler.
+5. **Shared Engine, Two Entry Points**: A single shaded `webcomparer.jar` bundles both `WebJarComparer` (compare) and `WebJarDecompiler` (decompile). The mode chosen in the UI simply changes which main class `cheerpjRunMain` invokes — no separate downloads, and both reuse the same CFR/Gson/IPC plumbing.
+6. **Client-Side Packaging**: In Decompile mode the Java side emits every file as JSON (`utf8` text, or `base64` for binaries). The React app rebuilds the directory tree with **JSZip** entirely in the browser and triggers a `.zip` download, keeping the "no backend, no uploads" guarantee.

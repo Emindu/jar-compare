@@ -1,11 +1,15 @@
 # jar-compare
 
-A **client-side JAR comparison tool**. Pick two Java `.jar` files and see
-exactly what changed between them — added, removed, and modified entries,
-with a readable **source-level diff** of changed classes.
+A **client-side JAR toolkit** with two tools:
 
-Everything runs **inside your browser**. The Java comparison engine executes
-via WebAssembly (CheerpJ), so your JARs are never uploaded to a server.
+- **Compare** — pick two `.jar` files and see exactly what changed between
+  them (added / removed / modified entries) with a readable **source-level
+  diff** of changed classes.
+- **Decompile** — pick one `.jar`, decompile its bytecode back to Java source,
+  browse it, and **download the whole source tree as a `.zip`**.
+
+Everything runs **inside your browser**. The Java engine executes via
+WebAssembly (CheerpJ), so your JARs are never uploaded to a server.
 
 🔗 **Live app:** https://emindu.github.io/jar-compare/
 
@@ -13,6 +17,7 @@ via WebAssembly (CheerpJ), so your JARs are never uploaded to a server.
 
 ## Features
 
+**Compare mode**
 - 📦 **Compare two JARs** entirely in the browser — drag & drop or browse.
 - 🔍 **Source-level diffs** — changed `.class` files are decompiled (via CFR)
   so you see readable Java, not bytecode, side by side.
@@ -23,6 +28,16 @@ via WebAssembly (CheerpJ), so your JARs are never uploaded to a server.
 - 🧠 **"Identical source" detection** — flags classes whose bytecode differs
   but whose decompiled source is identical (e.g. recompiled with a different
   compiler or line-number changes).
+
+**Decompile mode**
+- 🧩 **De-archive & decompile** a single JAR — every class is decompiled to
+  Java source (via CFR), every resource is extracted verbatim.
+- 🗂️ **Browse extracted files** — view decompiled sources and text resources
+  inline before downloading.
+- ⬇️ **Download as `.zip`** — the full source tree is packaged in-browser
+  (via JSZip) as `<jarname>-sources.zip`.
+
+**Shared**
 - 🌗 **Light / dark theme** — defaults to light; your choice is remembered.
 - 🔒 **Private by design** — no backend, no uploads; just static files.
 
@@ -32,14 +47,16 @@ via WebAssembly (CheerpJ), so your JARs are never uploaded to a server.
 
 ```
 Browser tab
-└── React + TypeScript UI
+└── React + TypeScript UI   (Compare / Decompile modes)
     └── CheerpJ  (a Java Virtual Machine compiled to WebAssembly)
-        └── webcomparer.jar  (the comparison engine)
-            └── reads your two JARs, diffs + decompiles, returns JSON
+        └── webcomparer.jar  (the engine — ships two entry points)
+            ├── WebJarComparer    → diffs two JARs, returns JSON
+            └── WebJarDecompiler  → decompiles one JAR, returns JSON
 ```
 
-The UI hands the two selected JARs to an in-browser JVM, runs the Java
-engine over them, and renders the JSON result it prints back.
+The UI hands the selected JAR(s) to an in-browser JVM, runs the matching Java
+entry point, and renders the JSON result it prints back. In Decompile mode the
+JSON is repackaged into a downloadable `.zip`.
 
 📖 **Full details:** see [`ARCHITECTURE.md`](./ARCHITECTURE.md) — includes a
 beginner-friendly WebAssembly explainer and diagrams of the runtime,
@@ -56,7 +73,8 @@ jar-compare/
 │   └── src/App.tsx               # Boots CheerpJ, feeds JARs, renders the diff
 ├── jar-compare-java/             # Java engine source (built separately with Maven)
 │   └── src/main/java/com/jarcompare/
-│       ├── WebJarComparer.java   # Entry point used by the web app
+│       ├── WebJarComparer.java   # Compare entry point (diffs two JARs)
+│       ├── WebJarDecompiler.java # Decompile entry point (one JAR → sources)
 │       └── JarComparer.java      # Stand-alone CLI variant
 ├── compare_jars.py               # Python helper / reference implementation
 └── .github/workflows/            # Builds web-app and deploys to GitHub Pages
