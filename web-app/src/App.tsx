@@ -1,9 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import ReactDiffViewer from 'react-diff-viewer-continued';
-import { CheckCircle2 } from 'lucide-react';
 import './index.css';
 
-// Type definitions
 interface FileContent {
   content1?: string;
   content2?: string;
@@ -28,25 +26,35 @@ interface CheerpJGlobal {
 
 declare const window: Window & typeof globalThis & CheerpJGlobal;
 
+type FileStatus = 'modifiedClasses' | 'modified' | 'added' | 'removed' | 'identicalSourceClasses' | 'nestedChanges';
+
+const STATUS_META: Record<FileStatus, { badge: string; cls: string; label: string }> = {
+  modifiedClasses:        { badge: 'M', cls: 'modified-class', label: 'Modified Class' },
+  modified:               { badge: 'M', cls: 'modified',       label: 'Modified'        },
+  added:                  { badge: 'A', cls: 'added',          label: 'Added'           },
+  removed:                { badge: 'R', cls: 'removed',        label: 'Removed'         },
+  identicalSourceClasses: { badge: '~', cls: 'identical',      label: 'Identical Source'},
+  nestedChanges:          { badge: 'N', cls: 'nested',         label: 'Nested JAR'      },
+};
+
 export default function App() {
   const [jar1File, setJar1File] = useState<File | null>(null);
   const [jar2File, setJar2File] = useState<File | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [diffResult, setDiffResult] = useState<DiffResult | null>(null);
-  
+
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
-  const [selectedType, setSelectedType] = useState<string | null>(null);
-  const [fileContent1, setFileContent1] = useState<string>('');
-  const [fileContent2, setFileContent2] = useState<string>('');
+  const [selectedType, setSelectedType] = useState<FileStatus | null>(null);
+  const [fileContent1, setFileContent1] = useState('');
+  const [fileContent2, setFileContent2] = useState('');
 
   const [dragActive1, setDragActive1] = useState(false);
   const [dragActive2, setDragActive2] = useState(false);
-  const [progressText, setProgressText] = useState<string>('');
+  const [progressText, setProgressText] = useState('');
 
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     const saved = localStorage.getItem('theme');
     if (saved === 'light' || saved === 'dark') return saved;
-    // Default to light; users can switch and their choice is remembered.
     return 'light';
   });
 
@@ -55,48 +63,46 @@ export default function App() {
     localStorage.setItem('theme', theme);
   }, [theme]);
 
-  const toggleTheme = () => setTheme(t => t === 'dark' ? 'light' : 'dark');
+  const toggleTheme = () => setTheme(t => (t === 'dark' ? 'light' : 'dark'));
 
-  const handleDrag = (e: React.DragEvent, setDragActive: (val: boolean) => void) => {
+  const resetComparison = () => {
+    setDiffResult(null);
+    setJar1File(null);
+    setJar2File(null);
+    setSelectedFile(null);
+    setSelectedType(null);
+    setProgressText('');
+  };
+
+  const handleDrag = (e: React.DragEvent, set: (v: boolean) => void) => {
     e.preventDefault();
     e.stopPropagation();
-    if (e.type === "dragenter" || e.type === "dragover") {
-      setDragActive(true);
-    } else if (e.type === "dragleave") {
-      setDragActive(false);
+    set(e.type === 'dragenter' || e.type === 'dragover');
+  };
+
+  const handleDrop = (e: React.DragEvent, setFile: (f: File | null) => void, setActive: (v: boolean) => void) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setActive(false);
+    const file = e.dataTransfer.files?.[0];
+    if (file) {
+      if (file.name.endsWith('.jar')) setFile(file);
+      else alert('Please drop a valid .jar file');
     }
   };
 
-  const handleDrop = (e: React.DragEvent, setFile: (f: File | null) => void, setDragActive: (val: boolean) => void) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragActive(false);
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      const file = e.dataTransfer.files[0];
-      if (file.name.endsWith('.jar')) {
-        setFile(file);
-      } else {
-        alert('Please drop a valid .jar file');
-      }
-    }
-  };
-
-  // Initialize CheerpJ
   useEffect(() => {
-    const initCheerpJ = async () => {
+    const init = async () => {
       try {
-        if (typeof window.cheerpjInit !== 'undefined') {
-          if (!window.__cheerpjInitializing) {
-            window.__cheerpjInitializing = true;
-            await window.cheerpjInit();
-            console.log('CheerpJ initialized');
-          }
+        if (typeof window.cheerpjInit !== 'undefined' && !window.__cheerpjInitializing) {
+          window.__cheerpjInitializing = true;
+          await window.cheerpjInit();
         }
       } catch (e) {
         console.error('Failed to initialize CheerpJ', e);
       }
     };
-    initCheerpJ();
+    init();
   }, []);
 
   const handleProcess = async () => {
@@ -107,300 +113,293 @@ export default function App() {
       const buffer1 = await jar1File.arrayBuffer();
       const buffer2 = await jar2File.arrayBuffer();
 
-      // Ensure CheerpJ is ready
       if (typeof window.cheerpjInit !== 'undefined' && !window.__cheerpjInitializing) {
-         window.__cheerpjInitializing = true;
-         await window.cheerpjInit();
+        window.__cheerpjInitializing = true;
+        await window.cheerpjInit();
       }
 
-      // Write files to virtual filesystem
-      window.cheerpOSAddStringFile("/str/jar1.jar", new Uint8Array(buffer1));
-      window.cheerpOSAddStringFile("/str/jar2.jar", new Uint8Array(buffer2));
+      window.cheerpOSAddStringFile('/str/jar1.jar', new Uint8Array(buffer1));
+      window.cheerpOSAddStringFile('/str/jar2.jar', new Uint8Array(buffer2));
 
-      // Run Java Comparison Logic
       const jsonResult = await new Promise<string>((resolve, reject) => {
-        let capturedJson = "";
+        let capturedJson = '';
         let isCapturing = false;
-        
         const originalLog = console.log;
-        console.log = function(...args) {
-          if (typeof args[0] === 'string' && args[0].includes('JSON_RESULT_START')) {
-            isCapturing = true;
-            return;
-          }
-          if (typeof args[0] === 'string' && args[0].includes('JSON_RESULT_END')) {
-            isCapturing = false;
-            return;
-          }
-          if (typeof args[0] === 'string' && args[0].startsWith('PROGRESS_MSG:')) {
-            setProgressText(args[0].substring(13));
-            return;
-          }
-          if (isCapturing) {
-            capturedJson += args[0] + (args[1] || "") + (args[2] || "");
-            return;
-          }
+        console.log = function (...args) {
+          if (typeof args[0] === 'string' && args[0].includes('JSON_RESULT_START')) { isCapturing = true; return; }
+          if (typeof args[0] === 'string' && args[0].includes('JSON_RESULT_END'))   { isCapturing = false; return; }
+          if (typeof args[0] === 'string' && args[0].startsWith('PROGRESS_MSG:'))   { setProgressText(args[0].substring(13)); return; }
+          if (isCapturing) { capturedJson += args[0] + (args[1] || '') + (args[2] || ''); return; }
           originalLog.apply(console, args);
         };
 
-        // CheerpJ's /app mount maps to the web-server root, so include the
-        // GitHub Pages base path (e.g. /jar-compare/) to reach the JAR.
-        const jarPath = "/app" + import.meta.env.BASE_URL + "webcomparer.jar";
-        window.cheerpjRunMain("com.jarcompare.WebJarComparer", jarPath, "/str/jar1.jar", "/str/jar2.jar")
-          .then((exitCode) => {
+        const jarPath = '/app' + import.meta.env.BASE_URL + 'webcomparer.jar';
+        window.cheerpjRunMain('com.jarcompare.WebJarComparer', jarPath, '/str/jar1.jar', '/str/jar2.jar')
+          .then(code => {
             console.log = originalLog;
-            if (exitCode !== 0 && !capturedJson) {
-              reject(new Error("Java process failed with exit code " + exitCode));
-            } else {
-              resolve(capturedJson);
-            }
+            if (code !== 0 && !capturedJson) reject(new Error('Java process failed with exit code ' + code));
+            else resolve(capturedJson);
           })
-          .catch(err => {
-            console.log = originalLog;
-            reject(err);
-          });
+          .catch(err => { console.log = originalLog; reject(err); });
       });
 
       const parsed: DiffResult = JSON.parse(jsonResult);
-      
       parsed.identicalSourceClasses = [];
       parsed.nestedChanges = [];
-      
+
       const filterNested = (arr: string[] | undefined) => {
         if (!arr) return [];
-        const nonNested = [];
-        for (const cls of arr) {
-          if (cls.includes(' -> ')) {
-            parsed.nestedChanges.push(cls);
-          } else {
-            nonNested.push(cls);
-          }
+        const out: string[] = [];
+        for (const s of arr) {
+          if (s.includes(' -> ')) parsed.nestedChanges.push(s);
+          else out.push(s);
         }
-        return nonNested;
+        return out;
       };
 
-      parsed.added = filterNested(parsed.added);
-      parsed.removed = filterNested(parsed.removed);
+      parsed.added    = filterNested(parsed.added);
+      parsed.removed  = filterNested(parsed.removed);
       parsed.modified = filterNested(parsed.modified);
-      
-      const nonNestedClasses = filterNested(parsed.modifiedClasses);
-      const actualModifiedClasses = [];
-      
-      for (const cls of nonNestedClasses) {
+
+      const nonNested = filterNested(parsed.modifiedClasses);
+      const actual: string[] = [];
+      for (const cls of nonNested) {
         const c1 = parsed.contents[cls]?.content1 || '';
         const c2 = parsed.contents[cls]?.content2 || '';
-        if (c1 === c2) {
-          parsed.identicalSourceClasses.push(cls);
-        } else {
-          actualModifiedClasses.push(cls);
-        }
+        if (c1 === c2) parsed.identicalSourceClasses.push(cls);
+        else actual.push(cls);
       }
-      parsed.modifiedClasses = actualModifiedClasses;
-      
+      parsed.modifiedClasses = actual;
+
       setDiffResult(parsed);
       setSelectedFile(null);
       setSelectedType(null);
     } catch (e) {
       console.error(e);
-      alert("Error processing jars: " + e);
+      alert('Error processing jars: ' + e);
     } finally {
       setIsProcessing(false);
       setProgressText('');
     }
   };
 
-  const handleSelectFile = (path: string, type: 'added' | 'removed' | 'modified' | 'modifiedClasses' | 'identicalSourceClasses' | 'nestedChanges') => {
+  const handleSelectFile = (path: string, type: FileStatus) => {
     setSelectedFile(path);
     setSelectedType(type);
-    
-    if (diffResult && diffResult.contents[path]) {
-      const contents = diffResult.contents[path];
-      setFileContent1(contents.content1 || '');
-      setFileContent2(contents.content2 || '');
-    } else {
-      setFileContent1('');
-      setFileContent2('');
+    const c = diffResult?.contents[path];
+    setFileContent1(c?.content1 || '');
+    setFileContent2(c?.content2 || '');
+  };
+
+  const stats = diffResult
+    ? {
+        modifiedClasses: diffResult.modifiedClasses.length,
+        modified:        diffResult.modified.length,
+        added:           diffResult.added.length,
+        removed:         diffResult.removed.length,
+        identical:       diffResult.identicalSourceClasses.length,
+        nested:          diffResult.nestedChanges.length,
+        get total() {
+          return this.modifiedClasses + this.modified + this.added + this.removed + this.identical + this.nested;
+        },
+      }
+    : null;
+
+  const breadcrumb = (path: string) => {
+    if (path.includes(' -> ')) {
+      const [outer, inner] = path.split(' -> ');
+      return `${outer.split('/').pop()} → ${inner.split('/').pop()}`;
     }
+    return path.replace(/\//g, ' / ');
+  };
+
+  const renderSection = (files: string[], type: FileStatus, sectionLabel: string) => {
+    if (!files.length) return null;
+    const { badge, cls } = STATUS_META[type];
+    return (
+      <div className="file-section" key={type}>
+        <div className="file-section-label">
+          <span className={`status-dot dot-${cls}`} />
+          {sectionLabel}
+          <span className="file-section-count">{files.length}</span>
+        </div>
+        {files.map(path => {
+          const name = path.includes(' -> ')
+            ? path.substring(path.indexOf(' -> ') + 4).split('/').pop()
+            : path.split('/').pop();
+          return (
+            <button
+              key={path}
+              className={`file-row${selectedFile === path ? ' selected' : ''}`}
+              onClick={() => handleSelectFile(path, type)}
+              title={path}
+            >
+              <span className={`file-badge badge-${cls}`}>{badge}</span>
+              <span className="file-row-name">{name}</span>
+            </button>
+          );
+        })}
+      </div>
+    );
   };
 
   return (
-    <div className="container">
-      <header className="header" style={{ position: 'relative' }}>
-        <h1>Client-Side JAR Comparer</h1>
-        <p>Runs your Java application entirely in the browser using WebAssembly.</p>
-        <button 
-          onClick={toggleTheme} 
-          style={{ position: 'absolute', right: 0, top: '1rem', background: 'var(--panel-bg)', border: '1px solid var(--border-color)', borderRadius: '6px', padding: '0.5rem 0.75rem', color: 'var(--text-main)', cursor: 'pointer', fontFamily: 'var(--font-sans)', fontSize: '0.85rem' }}
-        >
-          {theme === 'dark' ? '☀️ Light Mode' : '🌙 Dark Mode'}
-        </button>
-      </header>
-      
-      <div className="upload-section">
-        <div 
-          className={`file-input dropzone ${dragActive1 ? 'drag-active' : ''} ${jar1File ? 'has-file' : ''}`}
-          onDragEnter={e => handleDrag(e, setDragActive1)}
-          onDragOver={e => handleDrag(e, setDragActive1)}
-          onDragLeave={e => handleDrag(e, setDragActive1)}
-          onDrop={e => handleDrop(e, setJar1File, setDragActive1)}
-        >
-          <label>
-            <span>Original JAR (JAR 1)</span>
-            <span className="file-name">{jar1File ? jar1File.name : 'Drag & Drop or Click to Browse'}</span>
-            <input type="file" accept=".jar" onChange={e => setJar1File(e.target.files?.[0] || null)} />
-          </label>
-        </div>
-        <div 
-          className={`file-input dropzone ${dragActive2 ? 'drag-active' : ''} ${jar2File ? 'has-file' : ''}`}
-          onDragEnter={e => handleDrag(e, setDragActive2)}
-          onDragOver={e => handleDrag(e, setDragActive2)}
-          onDragLeave={e => handleDrag(e, setDragActive2)}
-          onDrop={e => handleDrop(e, setJar2File, setDragActive2)}
-        >
-          <label>
-            <span>Updated JAR (JAR 2)</span>
-            <span className="file-name">{jar2File ? jar2File.name : 'Drag & Drop or Click to Browse'}</span>
-            <input type="file" accept=".jar" onChange={e => setJar2File(e.target.files?.[0] || null)} />
-          </label>
-        </div>
-        <button 
-          className="process-btn" 
-          disabled={!jar1File || !jar2File || isProcessing}
-          onClick={handleProcess}
-        >
-          {isProcessing ? 'Processing...' : 'Compare JARs'}
-        </button>
-        {isProcessing && (
-          <div className="progress-container">
-            <div className="progress-track">
-              <div className="progress-bar" />
+    <div className={`app${diffResult ? ' has-results' : ''}`}>
+      {/* ── Navbar ───────────────────────────────── */}
+      <nav className="navbar">
+        <div className="navbar-left">
+          <span className="navbar-logo">⬡</span>
+          <span className="navbar-title">jar-compare</span>
+          {diffResult && jar1File && jar2File && (
+            <div className="navbar-jars">
+              <span className="jar-pill">{jar1File.name}</span>
+              <span className="jar-arrow">→</span>
+              <span className="jar-pill">{jar2File.name}</span>
             </div>
-            <div className="progress-text">{progressText || 'Working…'}</div>
-          </div>
-        )}
-      </div>
-
-      {diffResult && (
-        <div className="results-container">
-          <div className="sidebar">
-            <h3>Files Changed</h3>
-            
-            {diffResult.nestedChanges && diffResult.nestedChanges.length > 0 && (
-              <div className="file-group">
-                <h4 className="group-title nested-title">Nested JAR Changes ({diffResult.nestedChanges.length})</h4>
-                <ul>
-                  {diffResult.nestedChanges.map(path => {
-                    const displayName = path.includes(' -> ') ? path.substring(path.indexOf(' -> ') + 4).split('/').pop() : path.split('/').pop();
-                    return (
-                      <li key={path} className={selectedFile === path ? 'selected' : ''} onClick={() => handleSelectFile(path, 'nestedChanges')} title={path}>
-                        {displayName}
-                        <span style={{display: 'block', fontSize: '0.7rem', color: '#6b7280', marginTop: '2px'}}>
-                          {path.split(' -> ')[0].split('/').pop()}
-                        </span>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-            )}
-            
-            {diffResult.modifiedClasses && diffResult.modifiedClasses.length > 0 && (
-              <div className="file-group">
-                <h4 className="group-title modified-classes-title">Modified Classes ({diffResult.modifiedClasses.length})</h4>
-                <ul>
-                  {diffResult.modifiedClasses.map(path => (
-                    <li key={path} className={selectedFile === path ? 'selected' : ''} onClick={() => handleSelectFile(path, 'modifiedClasses')}>
-                      {path.split('/').pop()}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            
-            {diffResult.identicalSourceClasses && diffResult.identicalSourceClasses.length > 0 && (
-              <div className="file-group">
-                <h4 className="group-title identical-title">Identical Source ({diffResult.identicalSourceClasses.length})</h4>
-                <ul>
-                  {diffResult.identicalSourceClasses.map(path => (
-                    <li key={path} className={selectedFile === path ? 'selected' : ''} onClick={() => handleSelectFile(path, 'identicalSourceClasses')}>
-                      {path.split('/').pop()}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            
-            {diffResult.modified && diffResult.modified.length > 0 && (
-              <div className="file-group">
-                <h4 className="group-title modified-title">Other Modified Files ({diffResult.modified.length})</h4>
-                <ul>
-                  {diffResult.modified.map(path => (
-                    <li key={path} className={selectedFile === path ? 'selected' : ''} onClick={() => handleSelectFile(path, 'modified')}>
-                      {path.split('/').pop()}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
-            {diffResult.added && diffResult.added.length > 0 && (
-              <div className="file-group">
-                <h4 className="group-title added-title">Added Files ({diffResult.added.length})</h4>
-                <ul>
-                  {diffResult.added.map(path => (
-                    <li key={path} className={selectedFile === path ? 'selected' : ''} onClick={() => handleSelectFile(path, 'added')}>
-                      {path.split('/').pop()}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-
-            {diffResult.removed && diffResult.removed.length > 0 && (
-              <div className="file-group">
-                <h4 className="group-title removed-title">Removed Files ({diffResult.removed.length})</h4>
-                <ul>
-                  {diffResult.removed.map(path => (
-                    <li key={path} className={selectedFile === path ? 'selected' : ''} onClick={() => handleSelectFile(path, 'removed')}>
-                      {path.split('/').pop()}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            
-          </div>
-          <div className="main-content">
-            {selectedFile ? (
-              <div className="diff-view">
-                <div className="diff-header">
-                  <h4>{selectedFile}</h4>
-                </div>
-                {selectedType === 'identicalSourceClasses' && (
-                  <div className="alert-identical">
-                    <strong>Decompiled Java source is exactly identical!</strong>
-                    <p>The .class binary differs likely due to changes in comments, line numbers, or compiler version/flags.</p>
-                  </div>
-                )}
-                <div className="diff-body">
-                  <ReactDiffViewer 
-                    oldValue={fileContent1} 
-                    newValue={fileContent2} 
-                    splitView={true} 
-                    useDarkTheme={theme === 'dark'}
-                    leftTitle={jar1File?.name}
-                    rightTitle={jar2File?.name}
-                  />
-                </div>
-              </div>
-            ) : (
-              <div className="empty-state">
-                <CheckCircle2 size={48} className="success-icon" />
-                <p>Comparison complete. Select a file from the sidebar to view differences.</p>
-              </div>
-            )}
-          </div>
+          )}
         </div>
+        <div className="navbar-right">
+          {diffResult && (
+            <button className="btn btn-ghost" onClick={resetComparison}>
+              New comparison
+            </button>
+          )}
+          <button className="btn btn-icon" onClick={toggleTheme} title="Toggle theme">
+            {theme === 'dark' ? '☀' : '☾'}
+          </button>
+        </div>
+      </nav>
+
+      {/* ── Upload page ──────────────────────────── */}
+      {!diffResult && (
+        <main className="upload-page">
+          <div className="upload-card">
+            <div className="upload-heading">
+              <h1 className="upload-title">Compare JAR files</h1>
+              <p className="upload-sub">Side-by-side diff of classes, resources &amp; nested JARs — runs entirely in your browser</p>
+            </div>
+
+            <div className="dropzone-row">
+              <div
+                className={`dropzone${dragActive1 ? ' drag-active' : ''}${jar1File ? ' has-file' : ''}`}
+                onDragEnter={e => handleDrag(e, setDragActive1)}
+                onDragOver={e  => handleDrag(e, setDragActive1)}
+                onDragLeave={e => handleDrag(e, setDragActive1)}
+                onDrop={e => handleDrop(e, setJar1File, setDragActive1)}
+              >
+                <label>
+                  <span className="dz-label">Original JAR</span>
+                  <span className={`dz-file${jar1File ? ' dz-file--set' : ''}`}>
+                    {jar1File ? jar1File.name : 'Drop .jar or click to browse'}
+                  </span>
+                  {jar1File && <span className="dz-meta">{(jar1File.size / 1024 / 1024).toFixed(1)} MB</span>}
+                  <input type="file" accept=".jar" onChange={e => setJar1File(e.target.files?.[0] || null)} />
+                </label>
+              </div>
+
+              <div className="dz-divider">→</div>
+
+              <div
+                className={`dropzone${dragActive2 ? ' drag-active' : ''}${jar2File ? ' has-file' : ''}`}
+                onDragEnter={e => handleDrag(e, setDragActive2)}
+                onDragOver={e  => handleDrag(e, setDragActive2)}
+                onDragLeave={e => handleDrag(e, setDragActive2)}
+                onDrop={e => handleDrop(e, setJar2File, setDragActive2)}
+              >
+                <label>
+                  <span className="dz-label">New JAR</span>
+                  <span className={`dz-file${jar2File ? ' dz-file--set' : ''}`}>
+                    {jar2File ? jar2File.name : 'Drop .jar or click to browse'}
+                  </span>
+                  {jar2File && <span className="dz-meta">{(jar2File.size / 1024 / 1024).toFixed(1)} MB</span>}
+                  <input type="file" accept=".jar" onChange={e => setJar2File(e.target.files?.[0] || null)} />
+                </label>
+              </div>
+            </div>
+
+            <div className="upload-actions">
+              <button
+                className="btn btn-primary"
+                disabled={!jar1File || !jar2File || isProcessing}
+                onClick={handleProcess}
+              >
+                {isProcessing ? 'Analyzing…' : 'Compare JARs'}
+              </button>
+            </div>
+
+            {isProcessing && (
+              <div className="progress-wrap">
+                <div className="progress-track"><div className="progress-bar" /></div>
+                <div className="progress-text">{progressText || 'Working…'}</div>
+              </div>
+            )}
+          </div>
+        </main>
+      )}
+
+      {/* ── Results ──────────────────────────────── */}
+      {diffResult && stats && (
+        <>
+          <div className="stats-bar">
+            <span className="stats-total">{stats.total} files changed</span>
+            {stats.modifiedClasses > 0 && <span className="stat stat-modified-class">{stats.modifiedClasses} modified classes</span>}
+            {stats.modified       > 0 && <span className="stat stat-modified">{stats.modified} modified</span>}
+            {stats.added          > 0 && <span className="stat stat-added">+{stats.added} added</span>}
+            {stats.removed        > 0 && <span className="stat stat-removed">−{stats.removed} removed</span>}
+            {stats.identical      > 0 && <span className="stat stat-identical">{stats.identical} identical source</span>}
+            {stats.nested         > 0 && <span className="stat stat-nested">{stats.nested} nested</span>}
+          </div>
+
+          <div className="workspace">
+            {/* File panel */}
+            <aside className="file-panel">
+              <div className="file-panel-hd">Files changed</div>
+              <div className="file-list">
+                {renderSection(diffResult.modifiedClasses,        'modifiedClasses',        'Modified Classes')}
+                {renderSection(diffResult.modified,               'modified',               'Modified'        )}
+                {renderSection(diffResult.added,                  'added',                  'Added'           )}
+                {renderSection(diffResult.removed,                'removed',                'Removed'         )}
+                {renderSection(diffResult.identicalSourceClasses, 'identicalSourceClasses', 'Identical Source')}
+                {renderSection(diffResult.nestedChanges,          'nestedChanges',          'Nested JAR'      )}
+              </div>
+            </aside>
+
+            {/* Diff panel */}
+            <div className="diff-panel">
+              {selectedFile && selectedType ? (
+                <div className="diff-view">
+                  <div className="diff-panel-hd">
+                    <span className="diff-crumb">{breadcrumb(selectedFile)}</span>
+                    <span className={`diff-type-badge badge-${STATUS_META[selectedType].cls}`}>
+                      {STATUS_META[selectedType].label}
+                    </span>
+                  </div>
+                  {selectedType === 'identicalSourceClasses' && (
+                    <div className="alert-banner">
+                      <strong>Decompiled source is identical</strong> — binary differs due to compiler version, line numbers, or debug info.
+                    </div>
+                  )}
+                  <div className="diff-body">
+                    <ReactDiffViewer
+                      oldValue={fileContent1}
+                      newValue={fileContent2}
+                      splitView={true}
+                      useDarkTheme={theme === 'dark'}
+                      leftTitle={jar1File?.name}
+                      rightTitle={jar2File?.name}
+                    />
+                  </div>
+                </div>
+              ) : (
+                <div className="diff-empty">
+                  <span className="diff-empty-icon">⬡</span>
+                  <p>Select a file to view the diff</p>
+                  <p className="diff-empty-sub">{stats.total} files · {jar1File?.name} → {jar2File?.name}</p>
+                </div>
+              )}
+            </div>
+          </div>
+        </>
       )}
     </div>
   );
