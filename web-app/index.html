@@ -2,13 +2,98 @@
 <html lang="en" data-theme="light">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>web-app</title>
+
+    <!-- Primary SEO -->
+    <title>JAR Compare — Compare &amp; Decompile Java JAR Files Online (Free)</title>
+    <meta
+      name="description"
+      content="JAR Compare is a free online tool to compare two Java JAR files and decompile JARs to source — class-by-class diffs, nested JAR support, syntax-highlighted source. 100% in-browser, no upload."
+    />
+    <meta
+      name="keywords"
+      content="jar compare, compare jar files, java jar diff, jar diff tool, decompile jar, jar decompiler online, compare two jars, java bytecode diff, jar file comparison"
+    />
+    <meta name="author" content="jar-compare" />
+    <meta name="robots" content="index, follow" />
+    <link rel="canonical" href="https://emindu.github.io/jar-compare/" />
+    <meta name="theme-color" content="#0969da" />
+
+    <!-- Icons / PWA -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/favicon.svg" />
+    <link rel="manifest" href="/site.webmanifest" />
+
+    <!-- Open Graph -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="JAR Compare" />
+    <meta property="og:title" content="JAR Compare — Compare &amp; Decompile Java JAR Files Online" />
+    <meta
+      property="og:description"
+      content="Free, private, in-browser tool to compare two Java JAR files and decompile JARs to source. Class-by-class diffs, nested JAR support, syntax highlighting."
+    />
+    <meta property="og:url" content="https://emindu.github.io/jar-compare/" />
+    <meta property="og:image" content="https://emindu.github.io/jar-compare/favicon.svg" />
+
+    <!-- Twitter -->
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="JAR Compare — Compare &amp; Decompile Java JAR Files Online" />
+    <meta
+      name="twitter:description"
+      content="Free, private, in-browser tool to compare two Java JAR files and decompile JARs to source."
+    />
+    <meta name="twitter:image" content="https://emindu.github.io/jar-compare/favicon.svg" />
+
+    <!-- Structured data: free developer web app -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "WebApplication",
+        "name": "JAR Compare",
+        "url": "https://emindu.github.io/jar-compare/",
+        "description": "Free online tool to compare two Java JAR files and decompile JAR bytecode back to source, entirely in the browser.",
+        "applicationCategory": "DeveloperApplication",
+        "operatingSystem": "Any (web browser)",
+        "browserRequirements": "Requires JavaScript and WebAssembly",
+        "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+        "featureList": [
+          "Compare two Java JAR files",
+          "Class-by-class source diff",
+          "Nested JAR comparison",
+          "Decompile JAR to Java source",
+          "Download decompiled sources as a zip",
+          "Runs entirely in the browser with no upload"
+        ]
+      }
+    </script>
+
     <script src="https://cjrtnc.leaningtech.com/4.3/loader.js"></script>
   </head>
   <body>
-    <div id="root"></div>
+    <!-- Static, crawlable content shown before the React app mounts (and to
+         no-JS crawlers). React replaces #root on load. -->
+    <div id="root">
+      <main style="max-width: 720px; margin: 12vh auto; padding: 0 1.5rem; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Helvetica, Arial, sans-serif; color: #1f2328; text-align: center;">
+        <h1 style="font-size: 1.6rem; margin-bottom: 0.75rem;">JAR Compare — Compare &amp; Decompile Java JAR Files</h1>
+        <p style="color: #57606a; line-height: 1.6;">
+          A free, private, browser-based tool to <strong>compare two Java JAR files</strong>
+          and <strong>decompile a JAR to source code</strong>. See class-by-class diffs with
+          syntax highlighting, drill into nested JARs, and download the decompiled sources —
+          all without uploading your files to any server.
+        </p>
+        <p style="color: #8b949e; margin-top: 1.5rem;">Loading the app…</p>
+      </main>
+    </div>
+    <noscript>
+      <div style="max-width: 720px; margin: 2rem auto; padding: 0 1.5rem; font-family: sans-serif;">
+        <h1>JAR Compare — Compare &amp; Decompile Java JAR Files</h1>
+        <p>
+          JAR Compare is a free online tool to compare two Java JAR files and decompile
+          JAR bytecode back to Java source, entirely in your browser. This application
+          requires JavaScript to run.
+        </p>
+      </div>
+    </noscript>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
