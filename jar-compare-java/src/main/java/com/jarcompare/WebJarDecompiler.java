@@ -79,7 +79,7 @@ public class WebJarDecompiler {
                 .forEach(p -> {
                     try {
                         String rel = sourceDir.relativize(p).toString().replace('\\', '/');
-                        String content = Files.readString(p, StandardCharsets.UTF_8);
+                        String content = new String(Files.readAllBytes(p), StandardCharsets.UTF_8);
                         addFile(files, rel, content, "utf8");
                         javaCount[0]++;
                     } catch (IOException e) {
@@ -99,7 +99,7 @@ public class WebJarDecompiler {
                 if (name.endsWith(".class")) continue; // already decompiled to .java
 
                 try (InputStream is = zip.getInputStream(entry)) {
-                    byte[] data = is.readAllBytes();
+                    byte[] data = readAll(is);
                     if (isText(data)) {
                         addFile(files, name, new String(data, StandardCharsets.UTF_8), "utf8");
                     } else {
@@ -113,6 +113,15 @@ public class WebJarDecompiler {
 
         System.out.println("PROGRESS_MSG:Packaging archive ...");
         return result;
+    }
+
+    /** Read a stream fully (Java 8 compatible — no InputStream.readAllBytes). */
+    private static byte[] readAll(InputStream is) throws IOException {
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        byte[] chunk = new byte[8192];
+        int n;
+        while ((n = is.read(chunk)) != -1) buffer.write(chunk, 0, n);
+        return buffer.toByteArray();
     }
 
     private static void addFile(JsonObject files, String path, String content, String encoding) {
