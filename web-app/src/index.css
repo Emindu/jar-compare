@@ -97,6 +97,55 @@ body {
   border-radius: 6px;
 }
 
+.progress-container {
+  position: absolute;
+  bottom: -3.75rem;
+  left: 2rem;
+  right: 2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.progress-track {
+  position: relative;
+  width: 100%;
+  height: 6px;
+  background: var(--border-color);
+  border-radius: 999px;
+  overflow: hidden;
+}
+
+/* Indeterminate bar: we don't know total work up front, so animate a
+   sliding segment to convey ongoing activity. */
+.progress-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 40%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-hover));
+  animation: progress-slide 1.3s ease-in-out infinite;
+}
+
+@keyframes progress-slide {
+  0%   { left: -40%; width: 40%; }
+  50%  { width: 55%; }
+  100% { left: 100%; width: 40%; }
+}
+
+.progress-text {
+  text-align: center;
+  font-size: 0.85rem;
+  color: var(--accent);
+  font-family: var(--font-mono);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .progress-bar { animation-duration: 3s; }
+}
+
 .dropzone {
   position: relative;
   border: 1px dashed var(--border-color);
