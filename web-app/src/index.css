@@ -115,6 +115,20 @@ body {
   min-width: 0;
 }
 
+.navbar-brand {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  background: none;
+  border: none;
+  padding: 0.25rem 0.35rem;
+  margin: 0 -0.35rem;
+  border-radius: 6px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.navbar-brand:hover { background: var(--surface-2); }
+
 .navbar-logo {
   font-size: 1.1rem;
   color: var(--accent);
@@ -552,6 +566,53 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* ── Package/path tree (decompile sidebar) ──────────────────────────────── */
+.file-tree { padding: 0.35rem 0; }
+
+.tree-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: 100%;
+  padding: 0.22rem 0.5rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text);
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.tree-row:hover { background: var(--surface-2); }
+
+.tree-file.selected {
+  background: var(--accent-subtle);
+  color: var(--accent);
+}
+
+.tree-caret {
+  width: 0.8em;
+  flex-shrink: 0;
+  color: var(--text-muted);
+  font-size: 0.7rem;
+}
+
+.tree-icon {
+  flex-shrink: 0;
+  opacity: 0.8;
+  font-size: 0.85rem;
+}
+
+.tree-dir { color: var(--text-muted); font-weight: 500; }
+.tree-dir:hover { color: var(--text); }
+
+.tree-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ── Diff panel ─────────────────────────────────────────────────────────── */
