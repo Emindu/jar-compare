@@ -628,6 +628,124 @@ export default function App() {
         </main>
       )}
 
+      {/* ── Landing usage / SEO content (shown on the home screen) ── */}
+      {!hasResults && (
+        <>
+          <section className="landing" aria-label="About JAR Compare">
+            <div className="landing-inner">
+
+              <div className="lc-block">
+                <h2 className="lc-h2">How to compare two JAR files</h2>
+                <ol className="steps">
+                  <li>
+                    <span className="step-n">1</span>
+                    <div>
+                      <strong>Choose two JARs</strong>
+                      <p>Drag &amp; drop your original and updated <code>.jar</code> files into the two drop zones, or click to browse.</p>
+                    </div>
+                  </li>
+                  <li>
+                    <span className="step-n">2</span>
+                    <div>
+                      <strong>Run the comparison</strong>
+                      <p>Hit <em>Compare JARs</em>. Every entry is hashed and matched to find added, removed and modified files — including JARs nested inside JARs.</p>
+                    </div>
+                  </li>
+                  <li>
+                    <span className="step-n">3</span>
+                    <div>
+                      <strong>Review the diff</strong>
+                      <p>Changed classes are decompiled and shown as a side-by-side Java source diff, so you see real code changes — not just bytecode.</p>
+                    </div>
+                  </li>
+                </ol>
+              </div>
+
+              <div className="lc-block">
+                <h2 className="lc-h2">How to decompile a JAR file</h2>
+                <ol className="steps">
+                  <li>
+                    <span className="step-n">1</span>
+                    <div>
+                      <strong>Switch to Decompile</strong>
+                      <p>Pick the <em>Decompile</em> tab and drop in a single <code>.jar</code> file.</p>
+                    </div>
+                  </li>
+                  <li>
+                    <span className="step-n">2</span>
+                    <div>
+                      <strong>Decompile &amp; extract</strong>
+                      <p>The whole archive is decompiled to readable Java source with the CFR decompiler, and every resource is extracted.</p>
+                    </div>
+                  </li>
+                  <li>
+                    <span className="step-n">3</span>
+                    <div>
+                      <strong>Browse &amp; download</strong>
+                      <p>Explore sources in a package tree with syntax highlighting, then download everything as a <code>.zip</code>.</p>
+                    </div>
+                  </li>
+                </ol>
+              </div>
+
+              <div className="lc-block">
+                <h2 className="lc-h2">Features</h2>
+                <div className="feature-grid">
+                  <div className="feature-card"><h3>📦 Compare JAR files</h3><p>Class-by-class diff of two Java JARs with added / removed / modified detection.</p></div>
+                  <div className="feature-card"><h3>🔍 Source-level diffs</h3><p>Changed <code>.class</code> files are decompiled so you read Java, not bytecode.</p></div>
+                  <div className="feature-card"><h3>🪆 Nested JARs</h3><p>Recurses into JARs packaged inside JARs, like Spring Boot fat JARs.</p></div>
+                  <div className="feature-card"><h3>🧩 Decompile to source</h3><p>Turn any JAR back into a browsable, downloadable Java source tree.</p></div>
+                  <div className="feature-card"><h3>🔒 100% private</h3><p>Your JARs never leave your machine — everything runs in the browser.</p></div>
+                  <div className="feature-card"><h3>⚡ No install, free</h3><p>No account, no upload, no setup. Open the page and go.</p></div>
+                </div>
+              </div>
+
+              <div className="lc-block">
+                <h2 className="lc-h2">Runs entirely in your browser</h2>
+                <p className="lc-prose">
+                  JAR Compare runs a real Java Virtual Machine compiled to <strong>WebAssembly</strong> (via CheerpJ)
+                  right inside your browser tab. That means your <code>.jar</code> files are <strong>never uploaded</strong> to
+                  a server — comparison and decompilation happen locally, keeping proprietary code private. Decompilation is
+                  powered by the <strong>CFR</strong> decompiler, the same engine used in the diff view.
+                </p>
+              </div>
+
+              <div className="lc-block">
+                <h2 className="lc-h2">Frequently asked questions</h2>
+                <div className="faq">
+                  <details>
+                    <summary>Is JAR Compare free?</summary>
+                    <p>Yes — it's completely free, with no account or sign-up required.</p>
+                  </details>
+                  <details>
+                    <summary>Are my JAR files uploaded anywhere?</summary>
+                    <p>No. All processing happens in your browser using WebAssembly. Your files never leave your device.</p>
+                  </details>
+                  <details>
+                    <summary>Can it compare Spring Boot or fat/uber JARs?</summary>
+                    <p>Yes. JAR Compare recurses into nested JARs (e.g. <code>BOOT-INF/lib</code>) and diffs their contents too.</p>
+                  </details>
+                  <details>
+                    <summary>How does it show source diffs from compiled classes?</summary>
+                    <p>Changed <code>.class</code> files are decompiled to Java with CFR, then shown as a side-by-side source diff.</p>
+                  </details>
+                  <details>
+                    <summary>Can I download the decompiled source?</summary>
+                    <p>Yes. In Decompile mode you can browse the package tree and download the full source as a <code>.zip</code>.</p>
+                  </details>
+                </div>
+              </div>
+
+            </div>
+          </section>
+
+          <footer className="site-footer">
+            <span>JAR Compare — compare &amp; decompile Java JAR files, free and in your browser.</span>
+            <a href="https://github.com/Emindu/jar-compare" target="_blank" rel="noopener noreferrer">View on GitHub ↗</a>
+          </footer>
+        </>
+      )}
+
       {/* ── Results: COMPARE ─────────────────────── */}
       {diffResult && stats && (
         <>
