@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://emindu.github.io/jar-compare/sitemap.xml

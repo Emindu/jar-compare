@@ -1,5 +1,6 @@
 {
-  "name": "web-app",
+  "name": "jar-compare",
+  "description": "Free in-browser tool to compare two Java JAR files and decompile JARs to source.",
   "private": true,
   "version": "0.0.0",
   "type": "module",
