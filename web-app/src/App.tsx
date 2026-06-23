@@ -46,10 +46,8 @@ export default function App() {
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
     const saved = localStorage.getItem('theme');
     if (saved === 'light' || saved === 'dark') return saved;
-    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
-      return 'light';
-    }
-    return 'dark';
+    // Default to light; users can switch and their choice is remembered.
+    return 'light';
   });
 
   useEffect(() => {
@@ -272,18 +270,12 @@ export default function App() {
         >
           {isProcessing ? 'Processing...' : 'Compare JARs'}
         </button>
-        {isProcessing && progressText && (
-          <div className="progress-container" style={{
-            position: 'absolute',
-            bottom: '-2.5rem',
-            left: 0,
-            right: 0,
-            textAlign: 'center',
-            fontSize: '0.85rem',
-            color: 'var(--accent)',
-            fontFamily: 'var(--font-mono)'
-          }}>
-            {progressText}
+        {isProcessing && (
+          <div className="progress-container">
+            <div className="progress-track">
+              <div className="progress-bar" />
+            </div>
+            <div className="progress-text">{progressText || 'Working…'}</div>
           </div>
         )}
       </div>
