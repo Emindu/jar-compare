@@ -1,0 +1,25 @@
+# Node
+node_modules/
+dist/
+build/
+.env.local
+.env.*.local
+
+# Maven
+target/
+
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Temp
+temp1/
+temp2/
+a.txt
+b.txt
+cfr.jar
+
+# Compiled
+*.jar
+!web-app/public/webcomparer.jar

@@ -1,0 +1,13 @@
+2026-06-23 09:36:14,439 INFO [main] Creating shared DXEndpoint...
+2026-06-23 09:36:14,713 INFO [main] Connecting shared DXFeed to address: demo.dxfeed.com:7300
+2026-06-23 09:36:15,082 INFO [main] RocksDB opened at: data/subscription-db
+2026-06-23 09:36:15,123 INFO [main] Initialized PROFILE processor with dedicated thread: PROFILE-processor-thread, queueCapacity: 500000, threadPoolSize: 5
+2026-06-23 09:36:15,146 INFO [main] Initialized QUOTE processor with dedicated thread: QUOTE-processor-thread, queueCapacity: 500000, threadPoolSize: 100
+2026-06-23 09:36:15,152 INFO [main] Initialized SUMMARY processor with dedicated thread: SUMMARY-processor-thread, queueCapacity: 500000, threadPoolSize: 5
+2026-06-23 09:36:15,158 INFO [main] Initialized TRADE processor with dedicated thread: TRADE-processor-thread, queueCapacity: 500000, threadPoolSize: 5
+2026-06-23 09:36:15,172 INFO [main] Initialized TIME_AND_SALE processor with dedicated thread: TIME_AND_SALE-processor-thread, queueCapacity: 500000, threadPoolSize: 5
+2026-06-23 09:36:15,339 INFO [main] Initializing SBE connection configs...
+2026-06-23 09:36:15,340 WARN [main] No SBE configs found to initialize!
+2026-06-23 09:36:15,340 INFO [main] SBE connection configs initialization complete.
+2026-06-23 09:36:16,137 INFO [main] starting to load symbol meta data from db 
+2026-06-23 09:36:16,137 INFO [main] Loading active symbols for exchange:  NSDQ with full market : true, full trade: true
