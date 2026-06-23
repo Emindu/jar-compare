@@ -1,7 +1,34 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import ReactDiffViewer from 'react-diff-viewer-continued';
+import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { oneLight, oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import java from 'react-syntax-highlighter/dist/esm/languages/prism/java';
+import kotlin from 'react-syntax-highlighter/dist/esm/languages/prism/kotlin';
+import groovy from 'react-syntax-highlighter/dist/esm/languages/prism/groovy';
+import scala from 'react-syntax-highlighter/dist/esm/languages/prism/scala';
+import markup from 'react-syntax-highlighter/dist/esm/languages/prism/markup';
+import json from 'react-syntax-highlighter/dist/esm/languages/prism/json';
+import yaml from 'react-syntax-highlighter/dist/esm/languages/prism/yaml';
+import properties from 'react-syntax-highlighter/dist/esm/languages/prism/properties';
+import sql from 'react-syntax-highlighter/dist/esm/languages/prism/sql';
+import bash from 'react-syntax-highlighter/dist/esm/languages/prism/bash';
+import javascript from 'react-syntax-highlighter/dist/esm/languages/prism/javascript';
+import css from 'react-syntax-highlighter/dist/esm/languages/prism/css';
 import JSZip from 'jszip';
 import './index.css';
+
+SyntaxHighlighter.registerLanguage('java', java);
+SyntaxHighlighter.registerLanguage('kotlin', kotlin);
+SyntaxHighlighter.registerLanguage('groovy', groovy);
+SyntaxHighlighter.registerLanguage('scala', scala);
+SyntaxHighlighter.registerLanguage('markup', markup);
+SyntaxHighlighter.registerLanguage('json', json);
+SyntaxHighlighter.registerLanguage('yaml', yaml);
+SyntaxHighlighter.registerLanguage('properties', properties);
+SyntaxHighlighter.registerLanguage('sql', sql);
+SyntaxHighlighter.registerLanguage('bash', bash);
+SyntaxHighlighter.registerLanguage('javascript', javascript);
+SyntaxHighlighter.registerLanguage('css', css);
 
 interface FileContent {
   content1?: string;
@@ -47,6 +74,53 @@ const STATUS_META: Record<FileStatus, { badge: string; cls: string; label: strin
 
 const JAR_PATH = '/app' + import.meta.env.BASE_URL + 'webcomparer.jar';
 
+// ── Package/path tree for the decompile sidebar ───────────────────────────
+interface TreeNode {
+  name: string;
+  path: string;                  // full path (folders included)
+  isFile: boolean;
+  children: Map<string, TreeNode>;
+}
+
+function buildTree(paths: string[]): TreeNode {
+  const root: TreeNode = { name: '', path: '', isFile: false, children: new Map() };
+  for (const p of paths) {
+    const parts = p.split('/');
+    let node = root;
+    parts.forEach((part, i) => {
+      const isLast = i === parts.length - 1;
+      let child = node.children.get(part);
+      if (!child) {
+        child = { name: part, path: parts.slice(0, i + 1).join('/'), isFile: isLast, children: new Map() };
+        node.children.set(part, child);
+      }
+      node = child;
+    });
+  }
+  return root;
+}
+
+// Map a file path to a Prism language id for syntax highlighting.
+function langForPath(p: string): string {
+  const ext = p.split('.').pop()?.toLowerCase();
+  switch (ext) {
+    case 'java':                       return 'java';
+    case 'kt':                         return 'kotlin';
+    case 'groovy': case 'gradle':      return 'groovy';
+    case 'scala':                      return 'scala';
+    case 'xml': case 'xsd': case 'wsdl': case 'pom': case 'tld': return 'markup';
+    case 'html': case 'htm':           return 'markup';
+    case 'json':                       return 'json';
+    case 'yml': case 'yaml':           return 'yaml';
+    case 'properties':                 return 'properties';
+    case 'sql':                        return 'sql';
+    case 'sh':                         return 'bash';
+    case 'js':                         return 'javascript';
+    case 'css':                        return 'css';
+    default:                           return 'text';
+  }
+}
+
 export default function App() {
   const [mode, setMode] = useState<Mode>('compare');
 
@@ -75,6 +149,15 @@ export default function App() {
   const [dragActiveD, setDragActiveD] = useState(false);
   const [decompiled, setDecompiled] = useState<Record<string, DecompiledFile> | null>(null);
   const [selectedSource, setSelectedSource] = useState<string | null>(null);
+  const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(new Set());
+
+  const toggleDir = (path: string) =>
+    setCollapsedDirs(prev => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
@@ -92,6 +175,7 @@ export default function App() {
     setDecompiled(null);
     setSrcJar(null);
     setSelectedSource(null);
+    setCollapsedDirs(new Set());
     setProgressText('');
   };
 
@@ -99,6 +183,12 @@ export default function App() {
     if (m === mode) return;
     setMode(m);
     resetAll();
+  };
+
+  // Back to the landing screen (clears results and returns to the default mode).
+  const goHome = () => {
+    resetAll();
+    setMode('compare');
   };
 
   const handleDrag = (e: React.DragEvent, set: (v: boolean) => void) => {
@@ -322,28 +412,61 @@ export default function App() {
   const resourcePaths = decompiledPaths.filter(p => !p.endsWith('.java'));
   const selectedDecompiledFile = selectedSource && decompiled ? decompiled[selectedSource] : null;
 
-  const renderSourceSection = (paths: string[], label: string, badge: string, cls: string) => {
-    if (!paths.length) return null;
-    return (
-      <div className="file-section">
-        <div className="file-section-label">
-          <span className={`status-dot dot-${cls}`} />
-          {label}
-          <span className="file-section-count">{paths.length}</span>
-        </div>
-        {paths.map(path => (
-          <button
-            key={path}
-            className={`file-row${selectedSource === path ? ' selected' : ''}`}
-            onClick={() => setSelectedSource(path)}
-            title={path}
-          >
-            <span className={`file-badge badge-${cls}`}>{badge}</span>
-            <span className="file-row-name">{path.split('/').pop()}</span>
-          </button>
-        ))}
-      </div>
-    );
+  const decompiledTree = useMemo(
+    () => (decompiledPaths.length ? buildTree(decompiledPaths) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [decompiled],
+  );
+
+  // Recursively render a package/path tree. Single-child package chains are
+  // collapsed (e.g. com/example/util → com.example.util) like an IDE.
+  const renderTree = (node: TreeNode, depth: number): React.ReactNode[] => {
+    const children = [...node.children.values()].sort((a, b) => {
+      if (a.isFile !== b.isFile) return a.isFile ? 1 : -1; // folders first
+      return a.name.localeCompare(b.name);
+    });
+
+    return children.map(child => {
+      if (!child.isFile) {
+        let label = child.name;
+        let folder = child;
+        while (folder.children.size === 1) {
+          const only = [...folder.children.values()][0];
+          if (only.isFile) break;
+          label += '.' + only.name;
+          folder = only;
+        }
+        const collapsed = collapsedDirs.has(folder.path);
+        return (
+          <div key={folder.path}>
+            <button
+              className="tree-row tree-dir"
+              style={{ paddingLeft: depth * 12 + 8 }}
+              onClick={() => toggleDir(folder.path)}
+              title={folder.path}
+            >
+              <span className="tree-caret">{collapsed ? '▸' : '▾'}</span>
+              <span className="tree-icon">🗀</span>
+              <span className="tree-name">{label}</span>
+            </button>
+            {!collapsed && renderTree(folder, depth + 1)}
+          </div>
+        );
+      }
+      const isJava = child.path.endsWith('.java');
+      return (
+        <button
+          key={child.path}
+          className={`tree-row tree-file${selectedSource === child.path ? ' selected' : ''}`}
+          style={{ paddingLeft: depth * 12 + 8 }}
+          onClick={() => setSelectedSource(child.path)}
+          title={child.path}
+        >
+          <span className={`file-badge badge-${isJava ? 'added' : 'nested'}`}>{isJava ? 'J' : 'R'}</span>
+          <span className="tree-name">{child.name}</span>
+        </button>
+      );
+    });
   };
 
   const hasResults = !!diffResult || !!decompiled;
@@ -353,8 +476,10 @@ export default function App() {
       {/* ── Navbar ───────────────────────────────── */}
       <nav className="navbar">
         <div className="navbar-left">
-          <span className="navbar-logo">⬡</span>
-          <span className="navbar-title">jar-compare</span>
+          <button className="navbar-brand" onClick={goHome} title="Back to home">
+            <span className="navbar-logo">⬡</span>
+            <span className="navbar-title">jar-compare</span>
+          </button>
 
           {!hasResults && (
             <div className="mode-tabs">
@@ -386,6 +511,9 @@ export default function App() {
             <button className="btn btn-ghost" onClick={resetAll}>
               {mode === 'compare' ? 'New comparison' : 'New file'}
             </button>
+          )}
+          {hasResults && (
+            <button className="btn btn-icon" onClick={goHome} title="Home">⌂</button>
           )}
           <button className="btn btn-icon" onClick={toggleTheme} title="Toggle theme">
             {theme === 'dark' ? '☀' : '☾'}
@@ -575,9 +703,8 @@ export default function App() {
           <div className="workspace">
             <aside className="file-panel">
               <div className="file-panel-hd">Extracted files</div>
-              <div className="file-list">
-                {renderSourceSection(javaPaths, 'Sources', 'J', 'added')}
-                {renderSourceSection(resourcePaths, 'Resources', 'R', 'nested')}
+              <div className="file-list file-tree">
+                {decompiledTree && renderTree(decompiledTree, 0)}
               </div>
             </aside>
 
@@ -598,7 +725,22 @@ export default function App() {
                         <p className="diff-empty-sub">Included in the downloaded archive</p>
                       </div>
                     ) : (
-                      <pre className="source-view">{selectedDecompiledFile.content}</pre>
+                      <SyntaxHighlighter
+                        language={langForPath(selectedSource)}
+                        style={theme === 'dark' ? oneDark : oneLight}
+                        showLineNumbers
+                        wrapLongLines={false}
+                        customStyle={{
+                          margin: 0,
+                          background: 'transparent',
+                          padding: '1rem 1.25rem',
+                          fontSize: '0.82rem',
+                        }}
+                        codeTagProps={{ style: { fontFamily: 'var(--font-mono)' } }}
+                        lineNumberStyle={{ color: 'var(--text-muted)', opacity: 0.5, minWidth: '2.5em' }}
+                      >
+                        {selectedDecompiledFile.content}
+                      </SyntaxHighlighter>
                     )}
                   </div>
                 </div>
