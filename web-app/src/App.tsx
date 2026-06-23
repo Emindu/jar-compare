@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import ReactDiffViewer from 'react-diff-viewer-continued';
-import { Upload, FileCode2, FileWarning, CheckCircle2, ChevronRight, ChevronDown, File as FileIcon } from 'lucide-react';
+import { CheckCircle2 } from 'lucide-react';
 import './index.css';
 
 // Type definitions
