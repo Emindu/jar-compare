@@ -67,6 +67,41 @@
       }
     </script>
 
+    <!-- Structured data: FAQ (mirrors the on-page FAQ section) -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@type": "FAQPage",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "Is JAR Compare free?",
+            "acceptedAnswer": { "@type": "Answer", "text": "Yes, it is completely free with no account or sign-up required." }
+          },
+          {
+            "@type": "Question",
+            "name": "Are my JAR files uploaded anywhere?",
+            "acceptedAnswer": { "@type": "Answer", "text": "No. All processing happens in your browser using WebAssembly, so your files never leave your device." }
+          },
+          {
+            "@type": "Question",
+            "name": "Can it compare Spring Boot or fat/uber JARs?",
+            "acceptedAnswer": { "@type": "Answer", "text": "Yes. JAR Compare recurses into nested JARs such as BOOT-INF/lib and diffs their contents too." }
+          },
+          {
+            "@type": "Question",
+            "name": "How does it show source diffs from compiled classes?",
+            "acceptedAnswer": { "@type": "Answer", "text": "Changed .class files are decompiled to Java with the CFR decompiler, then shown as a side-by-side source diff." }
+          },
+          {
+            "@type": "Question",
+            "name": "Can I download the decompiled source?",
+            "acceptedAnswer": { "@type": "Answer", "text": "Yes. In Decompile mode you can browse the package tree and download the full source as a .zip file." }
+          }
+        ]
+      }
+    </script>
+
     <script src="https://cjrtnc.leaningtech.com/4.3/loader.js"></script>
   </head>
   <body>
