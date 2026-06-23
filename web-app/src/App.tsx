@@ -145,7 +145,8 @@ export default function App() {
           originalLog.apply(console, args);
         };
 
-        window.cheerpjRunMain("com.jarcompare.WebJarComparer", "/app/webcomparer.jar", "/str/jar1.jar", "/str/jar2.jar")
+        const jarUrl = window.location.origin + import.meta.env.BASE_URL + "webcomparer.jar";
+        window.cheerpjRunMain("com.jarcompare.WebJarComparer", jarUrl, "/str/jar1.jar", "/str/jar2.jar")
           .then((exitCode) => {
             console.log = originalLog;
             if (exitCode !== 0 && !capturedJson) {
