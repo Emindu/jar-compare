@@ -150,6 +150,8 @@ export default function App() {
   const [decompiled, setDecompiled] = useState<Record<string, DecompiledFile> | null>(null);
   const [selectedSource, setSelectedSource] = useState<string | null>(null);
   const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(new Set());
+  const [sourceQuery, setSourceQuery] = useState('');
+  const [copied, setCopied] = useState(false);
 
   const toggleDir = (path: string) =>
     setCollapsedDirs(prev => {
@@ -176,6 +178,7 @@ export default function App() {
     setSrcJar(null);
     setSelectedSource(null);
     setCollapsedDirs(new Set());
+    setSourceQuery('');
     setProgressText('');
   };
 
@@ -346,6 +349,63 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
+  // ── Single decompiled-file actions ──────────────────────────────────────
+  const mimeForPath = (p: string): string => {
+    const ext = p.split('.').pop()?.toLowerCase();
+    switch (ext) {
+      case 'java': case 'kt': case 'scala': case 'groovy': case 'properties':
+      case 'txt': case 'md': return 'text/plain;charset=utf-8';
+      case 'xml': case 'xsd': case 'wsdl': case 'pom': return 'application/xml;charset=utf-8';
+      case 'html': case 'htm': return 'text/html;charset=utf-8';
+      case 'json': return 'application/json;charset=utf-8';
+      case 'css': return 'text/css;charset=utf-8';
+      case 'js': return 'text/javascript;charset=utf-8';
+      default: return 'application/octet-stream';
+    }
+  };
+
+  const fileToBlob = (path: string, f: DecompiledFile): Blob => {
+    if (f.encoding === 'base64') {
+      const bin = atob(f.content);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      return new Blob([bytes], { type: mimeForPath(path) });
+    }
+    return new Blob([f.content], { type: mimeForPath(path) });
+  };
+
+  const copySource = async (content: string) => {
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      alert('Copy failed — your browser blocked clipboard access.');
+    }
+  };
+
+  const downloadSingle = (path: string, f: DecompiledFile) => {
+    const url = URL.createObjectURL(fileToBlob(path, f));
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = path.split('/').pop() || 'file';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const openInNewTab = (path: string, f: DecompiledFile) => {
+    // Java/text open nicer as plain text so the browser shows source, not downloads.
+    const blob = f.encoding === 'utf8'
+      ? new Blob([f.content], { type: 'text/plain;charset=utf-8' })
+      : fileToBlob(path, f);
+    const url = URL.createObjectURL(blob);
+    window.open(url, '_blank', 'noopener,noreferrer');
+    // Revoke later so the new tab has time to load.
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  };
+
   const handleSelectFile = (path: string, type: FileStatus) => {
     setSelectedFile(path);
     setSelectedType(type);
@@ -417,6 +477,25 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [decompiled],
   );
+
+  // grep across decompiled file contents (and paths). Case-insensitive.
+  const searchResults = useMemo(() => {
+    const q = sourceQuery.trim().toLowerCase();
+    if (!q || !decompiled) return null;
+    const out: { path: string; count: number }[] = [];
+    for (const path of Object.keys(decompiled).sort()) {
+      const f = decompiled[path];
+      let count = 0;
+      if (f.encoding === 'utf8') {
+        const hay = f.content.toLowerCase();
+        let idx = hay.indexOf(q);
+        while (idx !== -1) { count++; idx = hay.indexOf(q, idx + q.length); }
+      }
+      // also surface path/name matches even with no content hits
+      if (count > 0 || path.toLowerCase().includes(q)) out.push({ path, count });
+    }
+    return out.sort((a, b) => b.count - a.count || a.path.localeCompare(b.path));
+  }, [sourceQuery, decompiled]);
 
   // Recursively render a package/path tree. Single-child package chains are
   // collapsed (e.g. com/example/util → com.example.util) like an IDE.
@@ -820,10 +899,51 @@ export default function App() {
 
           <div className="workspace">
             <aside className="file-panel">
-              <div className="file-panel-hd">Extracted files</div>
-              <div className="file-list file-tree">
-                {decompiledTree && renderTree(decompiledTree, 0)}
+              <div className="file-search">
+                <input
+                  type="text"
+                  className="file-search-input"
+                  placeholder="Search in sources…"
+                  value={sourceQuery}
+                  onChange={e => setSourceQuery(e.target.value)}
+                  spellCheck={false}
+                  autoComplete="off"
+                />
+                {sourceQuery && (
+                  <button className="file-search-clear" onClick={() => setSourceQuery('')} title="Clear search">✕</button>
+                )}
               </div>
+              {searchResults ? (
+                <div className="file-list">
+                  <div className="file-section-label search-summary">
+                    {searchResults.length} {searchResults.length === 1 ? 'file' : 'files'} matched
+                  </div>
+                  {searchResults.length === 0 && (
+                    <div className="search-empty">No matches.</div>
+                  )}
+                  {searchResults.map(({ path, count }) => (
+                    <button
+                      key={path}
+                      className={`file-row${selectedSource === path ? ' selected' : ''}`}
+                      onClick={() => setSelectedSource(path)}
+                      title={path}
+                    >
+                      <span className={`file-badge badge-${path.endsWith('.java') ? 'added' : 'nested'}`}>
+                        {path.endsWith('.java') ? 'J' : 'R'}
+                      </span>
+                      <span className="search-row-text">
+                        <span className="file-row-name">{path.split('/').pop()}</span>
+                        <span className="search-row-path">{path}</span>
+                      </span>
+                      {count > 0 && <span className="search-count">{count}</span>}
+                    </button>
+                  ))}
+                </div>
+              ) : (
+                <div className="file-list file-tree">
+                  {decompiledTree && renderTree(decompiledTree, 0)}
+                </div>
+              )}
             </aside>
 
             <div className="diff-panel">
@@ -831,9 +951,34 @@ export default function App() {
                 <div className="diff-view">
                   <div className="diff-panel-hd">
                     <span className="diff-crumb">{selectedSource.replace(/\//g, ' / ')}</span>
-                    <span className={`diff-type-badge badge-${selectedSource.endsWith('.java') ? 'added' : 'nested'}`}>
-                      {selectedSource.endsWith('.java') ? 'Java source' : 'Resource'}
-                    </span>
+                    <div className="file-actions">
+                      <span className={`diff-type-badge badge-${selectedSource.endsWith('.java') ? 'added' : 'nested'}`}>
+                        {selectedSource.endsWith('.java') ? 'Java source' : 'Resource'}
+                      </span>
+                      {selectedDecompiledFile.encoding === 'utf8' && (
+                        <button
+                          className="file-action-btn"
+                          onClick={() => copySource(selectedDecompiledFile.content)}
+                          title="Copy to clipboard"
+                        >
+                          {copied ? '✓ Copied' : '⧉ Copy'}
+                        </button>
+                      )}
+                      <button
+                        className="file-action-btn"
+                        onClick={() => downloadSingle(selectedSource, selectedDecompiledFile)}
+                        title="Download this file"
+                      >
+                        ⇣ Download
+                      </button>
+                      <button
+                        className="file-action-btn"
+                        onClick={() => openInNewTab(selectedSource, selectedDecompiledFile)}
+                        title="Open in new tab"
+                      >
+                        ↗ Open
+                      </button>
+                    </div>
                   </div>
                   <div className="diff-body">
                     {selectedDecompiledFile.encoding === 'base64' ? (

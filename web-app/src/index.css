@@ -845,3 +845,90 @@ body {
 @media (max-width: 720px) {
   .steps, .feature-grid { grid-template-columns: 1fr; }
 }
+
+/* ── Decompile: source search ───────────────────────────────────────────── */
+.file-search {
+  position: relative;
+  padding: 0.5rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.file-search-input {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.35rem 1.8rem 0.35rem 0.6rem;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--text);
+  outline: none;
+}
+.file-search-input:focus { border-color: var(--accent); }
+.file-search-input::placeholder { color: var(--text-muted); }
+
+.file-search-clear {
+  position: absolute;
+  right: 1rem;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 0.2rem;
+  line-height: 1;
+}
+.file-search-clear:hover { color: var(--text); }
+
+.search-summary { padding-top: 0.5rem; }
+.search-empty { padding: 0.5rem 1rem; color: var(--text-muted); font-size: 0.8rem; }
+
+.search-row-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+.search-row-path {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.search-count {
+  margin-left: auto;
+  flex-shrink: 0;
+  background: var(--accent-subtle);
+  color: var(--accent);
+  border-radius: 999px;
+  padding: 0 7px;
+  font-size: 0.68rem;
+  font-family: var(--font-mono);
+}
+
+/* ── Decompile: per-file actions ────────────────────────────────────────── */
+.file-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-shrink: 0;
+}
+
+.file-action-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.22rem 0.55rem;
+  font-family: var(--font-sans);
+  font-size: 0.76rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.12s, color 0.12s;
+}
+.file-action-btn:hover { background: var(--surface-2); color: var(--text); }
