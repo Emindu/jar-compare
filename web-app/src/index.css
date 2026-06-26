@@ -964,3 +964,19 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* ── Decompile: Ctrl/Cmd-click "go to class" navigation ─────────────────── */
+/* While the modifier is held, local class references become clickable links. */
+.source-nav.mod-down .token.class-name:hover {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  color: var(--accent) !important;
+}
+
+.nav-hint {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+@media (max-width: 900px) { .nav-hint { display: none; } }

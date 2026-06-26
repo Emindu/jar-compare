@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import ReactDiffViewer from 'react-diff-viewer-continued';
 import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight, oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
@@ -170,6 +170,8 @@ export default function App() {
   const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(new Set());
   const [sourceQuery, setSourceQuery] = useState('');
   const [copied, setCopied] = useState(false);
+  const [modDown, setModDown] = useState(false); // Ctrl/Cmd held → nav affordance
+  const sourceScrollRef = useRef<HTMLDivElement | null>(null);
 
   const toggleDir = (path: string) =>
     setCollapsedDirs(prev => {
@@ -185,6 +187,26 @@ export default function App() {
   }, [theme]);
 
   const toggleTheme = () => setTheme(t => (t === 'dark' ? 'light' : 'dark'));
+
+  // Track Ctrl/Cmd for the "click a class to jump" affordance in decompiled source.
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => { if (e.key === 'Control' || e.key === 'Meta') setModDown(true); };
+    const up = (e: KeyboardEvent) => { if (e.key === 'Control' || e.key === 'Meta') setModDown(false); };
+    const clear = () => setModDown(false);
+    window.addEventListener('keydown', down);
+    window.addEventListener('keyup', up);
+    window.addEventListener('blur', clear);
+    return () => {
+      window.removeEventListener('keydown', down);
+      window.removeEventListener('keyup', up);
+      window.removeEventListener('blur', clear);
+    };
+  }, []);
+
+  // Reset scroll to the top whenever the viewed source file changes.
+  useEffect(() => {
+    if (sourceScrollRef.current) sourceScrollRef.current.scrollTop = 0;
+  }, [selectedSource]);
 
   const resetAll = () => {
     setDiffResult(null);
@@ -516,6 +538,67 @@ export default function App() {
     if (m.signed)                metaItems.push({ label: 'Signed', value: 'yes' });
   }
   const selectedDecompiledFile = selectedSource && decompiled ? decompiled[selectedSource] : null;
+
+  // Index of local decompiled classes: simple name -> paths, plus a set of all
+  // .java paths. Used to resolve Ctrl/Cmd-click "go to class" navigation.
+  const classIndex = useMemo(() => {
+    const bySimple = new Map<string, string[]>();
+    const all = new Set<string>();
+    if (decompiled) {
+      for (const p of Object.keys(decompiled)) {
+        if (!p.endsWith('.java')) continue;
+        all.add(p);
+        const simple = (p.split('/').pop() || '').replace(/\.java$/, '');
+        const arr = bySimple.get(simple);
+        if (arr) arr.push(p);
+        else bySimple.set(simple, [p]);
+      }
+    }
+    return { bySimple, all };
+  }, [decompiled]);
+
+  // Resolve a simple class name to a local decompiled file, using (in order)
+  // explicit imports, the current package, then wildcard imports. Returns null
+  // if it can't be resolved unambiguously to a local class.
+  const resolveClass = (name: string, currentPath: string): string | null => {
+    if (!decompiled || !/^[A-Za-z_$][\w$]*$/.test(name)) return null;
+    const candidates = classIndex.bySimple.get(name);
+    if (!candidates || candidates.length === 0) return null;
+    if (candidates.length === 1) return candidates[0];
+
+    const content = decompiled[currentPath]?.content || '';
+    const pkgDir = currentPath.includes('/') ? currentPath.slice(0, currentPath.lastIndexOf('/')) : '';
+    const wildcards: string[] = [];
+    const importRe = /import\s+(?:static\s+)?([\w.]+)\s*;/g;
+    let m: RegExpExecArray | null;
+    while ((m = importRe.exec(content))) {
+      const seg = m[1].split('.');
+      const last = seg[seg.length - 1];
+      if (last === '*') { wildcards.push(seg.slice(0, -1).join('/')); continue; }
+      if (last === name) {
+        const path = m[1].replace(/\./g, '/') + '.java';
+        if (classIndex.all.has(path)) return path;
+      }
+    }
+    const samePkg = pkgDir ? `${pkgDir}/${name}.java` : `${name}.java`;
+    if (classIndex.all.has(samePkg)) return samePkg;
+    for (const w of wildcards) {
+      const path = `${w}/${name}.java`;
+      if (classIndex.all.has(path)) return path;
+    }
+    return null; // ambiguous — don't guess
+  };
+
+  const onSourceClick = (e: React.MouseEvent) => {
+    if (!(e.ctrlKey || e.metaKey) || !selectedSource) return;
+    const text = ((e.target as HTMLElement).textContent || '').trim();
+    if (!/^[A-Za-z_$][\w$]*$/.test(text)) return;
+    const dest = resolveClass(text, selectedSource);
+    if (dest && dest !== selectedSource) {
+      e.preventDefault();
+      setSelectedSource(dest);
+    }
+  };
 
   const decompiledTree = useMemo(
     () => (decompiledPaths.length ? buildTree(decompiledPaths) : null),
@@ -1026,6 +1109,11 @@ export default function App() {
                   <div className="diff-panel-hd">
                     <span className="diff-crumb">{selectedSource.replace(/\//g, ' / ')}</span>
                     <div className="file-actions">
+                      {selectedSource.endsWith('.java') && (
+                        <span className="nav-hint" title="Hold Ctrl (⌘ on Mac) and click a class name to jump to it">
+                          ⌘/Ctrl-click a class to navigate
+                        </span>
+                      )}
                       <span className={`diff-type-badge badge-${selectedSource.endsWith('.java') ? 'added' : 'nested'}`}>
                         {selectedSource.endsWith('.java') ? 'Java source' : 'Resource'}
                       </span>
@@ -1054,7 +1142,7 @@ export default function App() {
                       </button>
                     </div>
                   </div>
-                  <div className="diff-body">
+                  <div className="diff-body" ref={sourceScrollRef}>
                     {selectedDecompiledFile.encoding === 'base64' ? (
                       <div className="diff-empty">
                         <span className="diff-empty-icon">▢</span>
@@ -1062,22 +1150,27 @@ export default function App() {
                         <p className="diff-empty-sub">Included in the downloaded archive</p>
                       </div>
                     ) : (
-                      <SyntaxHighlighter
-                        language={langForPath(selectedSource)}
-                        style={theme === 'dark' ? oneDark : oneLight}
-                        showLineNumbers
-                        wrapLongLines={false}
-                        customStyle={{
-                          margin: 0,
-                          background: 'transparent',
-                          padding: '1rem 1.25rem',
-                          fontSize: '0.82rem',
-                        }}
-                        codeTagProps={{ style: { fontFamily: 'var(--font-mono)' } }}
-                        lineNumberStyle={{ color: 'var(--text-muted)', opacity: 0.5, minWidth: '2.5em' }}
+                      <div
+                        className={`source-nav${modDown && selectedSource.endsWith('.java') ? ' mod-down' : ''}`}
+                        onClick={onSourceClick}
                       >
-                        {selectedDecompiledFile.content}
-                      </SyntaxHighlighter>
+                        <SyntaxHighlighter
+                          language={langForPath(selectedSource)}
+                          style={theme === 'dark' ? oneDark : oneLight}
+                          showLineNumbers
+                          wrapLongLines={false}
+                          customStyle={{
+                            margin: 0,
+                            background: 'transparent',
+                            padding: '1rem 1.25rem',
+                            fontSize: '0.82rem',
+                          }}
+                          codeTagProps={{ style: { fontFamily: 'var(--font-mono)' } }}
+                          lineNumberStyle={{ color: 'var(--text-muted)', opacity: 0.5, minWidth: '2.5em' }}
+                        >
+                          {selectedDecompiledFile.content}
+                        </SyntaxHighlighter>
+                      </div>
                     )}
                   </div>
                 </div>
