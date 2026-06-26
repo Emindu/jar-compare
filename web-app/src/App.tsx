@@ -478,24 +478,55 @@ export default function App() {
     [decompiled],
   );
 
-  // grep across decompiled file contents (and paths). Case-insensitive.
+  // Search decompiled files. Results are split into class/file-name matches
+  // (a file whose name — i.e. the Java class name — matches the query) and
+  // content matches (the query appears inside the file). Case-insensitive.
   const searchResults = useMemo(() => {
     const q = sourceQuery.trim().toLowerCase();
     if (!q || !decompiled) return null;
-    const out: { path: string; count: number }[] = [];
+    const classes: { path: string; count: number }[] = [];
+    const contents: { path: string; count: number }[] = [];
     for (const path of Object.keys(decompiled).sort()) {
       const f = decompiled[path];
+      const base = (path.split('/').pop() || '').toLowerCase();
+      const stem = base.replace(/\.[^.]+$/, ''); // class/file name without extension
+      const nameMatch = stem.includes(q) || base.includes(q);
       let count = 0;
       if (f.encoding === 'utf8') {
         const hay = f.content.toLowerCase();
         let idx = hay.indexOf(q);
         while (idx !== -1) { count++; idx = hay.indexOf(q, idx + q.length); }
       }
-      // also surface path/name matches even with no content hits
-      if (count > 0 || path.toLowerCase().includes(q)) out.push({ path, count });
+      if (nameMatch) classes.push({ path, count });
+      else if (count > 0) contents.push({ path, count });
     }
-    return out.sort((a, b) => b.count - a.count || a.path.localeCompare(b.path));
+    // Java sources first among name matches, then alphabetical.
+    classes.sort((a, b) => {
+      const aj = a.path.endsWith('.java') ? 0 : 1;
+      const bj = b.path.endsWith('.java') ? 0 : 1;
+      return aj - bj || a.path.localeCompare(b.path);
+    });
+    contents.sort((a, b) => b.count - a.count || a.path.localeCompare(b.path));
+    return { classes, contents, total: classes.length + contents.length };
   }, [sourceQuery, decompiled]);
+
+  const renderResultRow = ({ path, count }: { path: string; count: number }) => (
+    <button
+      key={path}
+      className={`file-row${selectedSource === path ? ' selected' : ''}`}
+      onClick={() => setSelectedSource(path)}
+      title={path}
+    >
+      <span className={`file-badge badge-${path.endsWith('.java') ? 'added' : 'nested'}`}>
+        {path.endsWith('.java') ? 'J' : 'R'}
+      </span>
+      <span className="search-row-text">
+        <span className="file-row-name">{path.split('/').pop()}</span>
+        <span className="search-row-path">{path}</span>
+      </span>
+      {count > 0 && <span className="search-count">{count}</span>}
+    </button>
+  );
 
   // Recursively render a package/path tree. Single-child package chains are
   // collapsed (e.g. com/example/util → com.example.util) like an IDE.
@@ -903,7 +934,7 @@ export default function App() {
                 <input
                   type="text"
                   className="file-search-input"
-                  placeholder="Search in sources…"
+                  placeholder="Search class name or contents…"
                   value={sourceQuery}
                   onChange={e => setSourceQuery(e.target.value)}
                   spellCheck={false}
@@ -915,29 +946,27 @@ export default function App() {
               </div>
               {searchResults ? (
                 <div className="file-list">
-                  <div className="file-section-label search-summary">
-                    {searchResults.length} {searchResults.length === 1 ? 'file' : 'files'} matched
-                  </div>
-                  {searchResults.length === 0 && (
+                  {searchResults.total === 0 && (
                     <div className="search-empty">No matches.</div>
                   )}
-                  {searchResults.map(({ path, count }) => (
-                    <button
-                      key={path}
-                      className={`file-row${selectedSource === path ? ' selected' : ''}`}
-                      onClick={() => setSelectedSource(path)}
-                      title={path}
-                    >
-                      <span className={`file-badge badge-${path.endsWith('.java') ? 'added' : 'nested'}`}>
-                        {path.endsWith('.java') ? 'J' : 'R'}
-                      </span>
-                      <span className="search-row-text">
-                        <span className="file-row-name">{path.split('/').pop()}</span>
-                        <span className="search-row-path">{path}</span>
-                      </span>
-                      {count > 0 && <span className="search-count">{count}</span>}
-                    </button>
-                  ))}
+                  {searchResults.classes.length > 0 && (
+                    <>
+                      <div className="file-section-label search-summary">
+                        Class &amp; file names
+                        <span className="file-section-count">{searchResults.classes.length}</span>
+                      </div>
+                      {searchResults.classes.map(renderResultRow)}
+                    </>
+                  )}
+                  {searchResults.contents.length > 0 && (
+                    <>
+                      <div className="file-section-label search-summary">
+                        In file contents
+                        <span className="file-section-count">{searchResults.contents.length}</span>
+                      </div>
+                      {searchResults.contents.map(renderResultRow)}
+                    </>
+                  )}
                 </div>
               ) : (
                 <div className="file-list file-tree">
