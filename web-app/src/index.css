@@ -965,18 +965,196 @@ body {
   text-overflow: ellipsis;
 }
 
-/* ── Decompile: Ctrl/Cmd-click "go to class" navigation ─────────────────── */
-/* While the modifier is held, local class references become clickable links. */
-.source-nav.mod-down .token.class-name:hover {
+/* ── Decompile: IDE-style code navigation ───────────────────────────────── */
+/* Only tokens that resolve to a local class get the link treatment (set in JS). */
+.source-nav .token.nav-link {
   text-decoration: underline;
   text-underline-offset: 2px;
   cursor: pointer;
   color: var(--accent) !important;
 }
 
-.nav-hint {
+/* Flash a line when you navigate/jump to it. */
+.line-flash {
+  display: inline-block;
+  width: 100%;
+  animation: line-flash 1.2s ease-out;
+  border-radius: 3px;
+}
+@keyframes line-flash {
+  0%, 30% { background: var(--accent-subtle); box-shadow: inset 3px 0 0 var(--accent); }
+  100%    { background: transparent; box-shadow: none; }
+}
+
+/* Back / Forward buttons in the source header */
+.nav-controls { display: flex; gap: 2px; flex-shrink: 0; }
+.nav-btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.7rem;
+  padding: 0.25rem 0.45rem;
+  line-height: 1;
+}
+.nav-btn:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
+.nav-btn:disabled { opacity: 0.35; cursor: default; }
+
+/* Clickable breadcrumb */
+.diff-crumb { display: flex; align-items: center; gap: 1px; flex-wrap: nowrap; }
+.crumb-seg {
+  background: none;
+  border: none;
+  padding: 0 2px;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  border-radius: 3px;
+}
+.crumb-seg:hover { color: var(--accent); background: var(--surface-2); }
+.crumb-current { color: var(--text); cursor: default; padding: 0 2px; }
+.crumb-sep { color: var(--text-muted); opacity: 0.5; font-size: 0.75rem; }
+
+/* Outline / structure popup */
+.outline-anchor { position: relative; }
+.file-action-btn.active { background: var(--surface-2); color: var(--text); }
+.outline-pop {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 30;
+  width: 260px;
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 28px rgba(0,0,0,0.3);
+  overflow: hidden;
+}
+.outline-hd {
+  padding: 0.45rem 0.75rem;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+}
+.outline-list { overflow-y: auto; padding: 0.25rem 0; }
+.outline-empty { padding: 0.6rem 0.75rem; color: var(--text-muted); font-size: 0.8rem; }
+.outline-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.28rem 0.75rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  color: var(--text);
+}
+.outline-row:hover { background: var(--surface-2); }
+.outline-icon { width: 1em; flex-shrink: 0; text-align: center; color: var(--text-muted); }
+.outline-row.kind-method .outline-icon { color: var(--purple-text); }
+.outline-row.kind-field .outline-icon  { color: var(--teal-text); }
+.outline-row.kind-class .outline-icon  { color: var(--amber-text); }
+.outline-name { flex: 1; overflow: hidden; text-overflow: ellipsis; }
+.outline-line { color: var(--text-muted); font-size: 0.7rem; }
+
+/* Quick Open modal */
+.qo-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(0,0,0,0.45);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 12vh;
+}
+.qo-modal {
+  width: min(560px, 92vw);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 16px 48px rgba(0,0,0,0.4);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  max-height: 70vh;
+}
+.qo-input {
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  padding: 0.8rem 1rem;
+  font-size: 0.95rem;
+  font-family: var(--font-mono);
+  outline: none;
+}
+.qo-list { overflow-y: auto; padding: 0.25rem 0; }
+.qo-empty { padding: 0.8rem 1rem; color: var(--text-muted); font-size: 0.85rem; }
+.qo-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  padding: 0.4rem 1rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  color: var(--text);
+}
+.qo-row.active { background: var(--accent-subtle); }
+.qo-name { font-family: var(--font-mono); font-size: 0.85rem; flex-shrink: 0; }
+.qo-path {
   font-size: 0.72rem;
   color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
-@media (max-width: 900px) { .nav-hint { display: none; } }
+
+/* "No definition found" toast */
+.nav-toast {
+  position: fixed;
+  bottom: 1.5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 120;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+  padding: 0.55rem 1rem;
+  font-size: 0.82rem;
+  color: var(--text);
+}
+
+/* Keyboard hints under the file tree */
+.panel-hints {
+  flex-shrink: 0;
+  border-top: 1px solid var(--border);
+  padding: 0.5rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.68rem;
+  color: var(--text-muted);
+}
+.panel-hints kbd {
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0 3px;
+}
