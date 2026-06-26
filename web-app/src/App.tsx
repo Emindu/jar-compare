@@ -138,6 +138,24 @@ function langForPath(p: string): string {
   }
 }
 
+// Lightweight fuzzy subsequence scorer for Quick Open. Returns null if the
+// query isn't a subsequence of the target; higher score = better match.
+function fuzzyScore(query: string, target: string): number | null {
+  const q = query.toLowerCase();
+  const t = target.toLowerCase();
+  let qi = 0, score = 0, streak = 0, last = -2;
+  for (let i = 0; i < t.length && qi < q.length; i++) {
+    if (t[i] === q[qi]) {
+      streak = i === last + 1 ? streak + 1 : 0;
+      score += 1 + streak;
+      if (i === 0 || /[^A-Za-z0-9]/.test(t[i - 1])) score += 2; // word-boundary bonus
+      last = i;
+      qi++;
+    }
+  }
+  return qi === q.length ? score : null;
+}
+
 export default function App() {
   const [mode, setMode] = useState<Mode>('compare');
 
@@ -173,6 +191,18 @@ export default function App() {
   const [modDown, setModDown] = useState(false); // Ctrl/Cmd held → nav affordance
   const sourceScrollRef = useRef<HTMLDivElement | null>(null);
 
+  // IDE navigation: history, quick-open, outline, toast
+  const [nav, setNav] = useState<{ stack: string[]; index: number }>({ stack: [], index: -1 });
+  const navRef = useRef(nav);
+  const [quickOpen, setQuickOpen] = useState(false);
+  const [quickQuery, setQuickQuery] = useState('');
+  const [quickIndex, setQuickIndex] = useState(0);
+  const [outlineOpen, setOutlineOpen] = useState(false);
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimer = useRef<number | null>(null);
+  const navHoverElRef = useRef<HTMLElement | null>(null);
+  const pendingFlashRef = useRef<number | null>(null);
+
   const toggleDir = (path: string) =>
     setCollapsedDirs(prev => {
       const next = new Set(prev);
@@ -206,7 +236,101 @@ export default function App() {
   // Reset scroll to the top whenever the viewed source file changes.
   useEffect(() => {
     if (sourceScrollRef.current) sourceScrollRef.current.scrollTop = 0;
+    clearNavHover();
+    // Perform a pending flash once the new file has rendered.
+    if (pendingFlashRef.current != null) {
+      const line = pendingFlashRef.current;
+      pendingFlashRef.current = null;
+      const t = window.setTimeout(() => flashLine(line), 40);
+      return () => clearTimeout(t);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedSource]);
+
+  useEffect(() => { navRef.current = nav; }, [nav]);
+  useEffect(() => { if (!modDown) clearNavHover(); }, [modDown]);
+
+  // ── Navigation history (open file + Back/Forward) ──
+  const openFile = (path: string | null) => {
+    setSelectedSource(path);
+    if (!path) return;
+    const { stack, index } = navRef.current;
+    if (stack[index] === path) return;
+    const next = stack.slice(0, index + 1);
+    next.push(path);
+    const newNav = { stack: next, index: next.length - 1 };
+    navRef.current = newNav;
+    setNav(newNav);
+  };
+
+  const navBack = () => {
+    const { stack, index } = navRef.current;
+    if (index <= 0) return;
+    const ni = index - 1;
+    const newNav = { stack, index: ni };
+    navRef.current = newNav;
+    setNav(newNav);
+    setSelectedSource(stack[ni]);
+  };
+
+  const navForward = () => {
+    const { stack, index } = navRef.current;
+    if (index >= stack.length - 1) return;
+    const ni = index + 1;
+    const newNav = { stack, index: ni };
+    navRef.current = newNav;
+    setNav(newNav);
+    setSelectedSource(stack[ni]);
+  };
+
+  const LINE_ID = (n: number) => `srcln-${n}`;
+  const flashLine = (line: number) => {
+    const el = document.getElementById(LINE_ID(line));
+    if (!el) return;
+    el.scrollIntoView({ block: 'center' });
+    el.classList.add('line-flash');
+    window.setTimeout(() => el.classList.remove('line-flash'), 1200);
+  };
+
+  const showToast = (msg: string) => {
+    setToast(msg);
+    if (toastTimer.current) clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(null), 2200);
+  };
+
+  const clearNavHover = () => {
+    if (navHoverElRef.current) {
+      navHoverElRef.current.classList.remove('nav-link');
+      navHoverElRef.current = null;
+    }
+  };
+
+  // Global keyboard shortcuts: Quick Open, Back/Forward, Escape.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'p' || e.key === 'P')) {
+        if (decompiled) { e.preventDefault(); setQuickOpen(o => !o); setQuickQuery(''); setQuickIndex(0); }
+        return;
+      }
+      if (e.key === 'Escape') { setQuickOpen(false); setOutlineOpen(false); return; }
+      if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); navBack(); return; }
+      if (e.altKey && e.key === 'ArrowRight') { e.preventDefault(); navForward(); return; }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [decompiled]);
+
+  // Mouse back/forward buttons.
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      if (e.button === 3) { e.preventDefault(); navBack(); }
+      else if (e.button === 4) { e.preventDefault(); navForward(); }
+    };
+    window.addEventListener('mousedown', onDown);
+    return () => window.removeEventListener('mousedown', onDown);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const resetAll = () => {
     setDiffResult(null);
@@ -221,6 +345,11 @@ export default function App() {
     setCollapsedDirs(new Set());
     setSourceQuery('');
     setProgressText('');
+    navRef.current = { stack: [], index: -1 };
+    setNav({ stack: [], index: -1 });
+    setQuickOpen(false);
+    setOutlineOpen(false);
+    setToast(null);
   };
 
   const switchMode = (m: Mode) => {
@@ -361,9 +490,12 @@ export default function App() {
       const files = parsed.files || {};
       setDecompiled(files);
       setDecompiledMeta(parsed.meta || null);
+      // fresh navigation history for the new jar
+      navRef.current = { stack: [], index: -1 };
+      setNav({ stack: [], index: -1 });
       // auto-select first .java source for instant feedback
       const firstJava = Object.keys(files).sort().find(p => p.endsWith('.java'));
-      setSelectedSource(firstJava || Object.keys(files).sort()[0] || null);
+      openFile(firstJava || Object.keys(files).sort()[0] || null);
     } catch (e) {
       console.error(e);
       alert('Error decompiling jar: ' + e);
@@ -589,16 +721,127 @@ export default function App() {
     return null; // ambiguous — don't guess
   };
 
+  // Parse the current file into an outline of top-level members (heuristic,
+  // works on CFR's 4-space-indented output). Used by the structure popup and
+  // for same-file member jumps.
+  const outline = useMemo(() => {
+    const out: { kind: 'class' | 'method' | 'field'; name: string; line: number }[] = [];
+    if (!selectedSource || !selectedSource.endsWith('.java')) return out;
+    const content = (decompiled && decompiled[selectedSource]?.encoding === 'utf8')
+      ? decompiled[selectedSource].content : '';
+    if (!content) return out;
+    const lines = content.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const ln = lines[i];
+      let m = ln.match(/^(?:public |private |protected |final |abstract |static |sealed )*(class|interface|enum|record|@interface)\s+([A-Za-z_$][\w$]*)/);
+      if (m) { out.push({ kind: 'class', name: m[2], line: i + 1 }); continue; }
+      if (!/^ {4}\S/.test(ln)) continue; // only one-indent members
+      m = ln.match(/(?:^| )([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*(?:throws [\w$., ]+)?\s*[{;]/);
+      if (m && !['if', 'for', 'while', 'switch', 'catch', 'return', 'new', 'synchronized'].includes(m[1])) {
+        out.push({ kind: 'method', name: m[1], line: i + 1 });
+        continue;
+      }
+      m = ln.match(/^ {4}(?:public |private |protected |static |final |volatile |transient )*[\w$.<>\[\], ]+\s+([A-Za-z_$][\w$]*)\s*(?:=|;)/);
+      if (m) out.push({ kind: 'field', name: m[1], line: i + 1 });
+    }
+    return out;
+  }, [selectedSource, decompiled]);
+
   const onSourceClick = (e: React.MouseEvent) => {
     if (!(e.ctrlKey || e.metaKey) || !selectedSource) return;
     const text = ((e.target as HTMLElement).textContent || '').trim();
     if (!/^[A-Za-z_$][\w$]*$/.test(text)) return;
+    e.preventDefault();
+
     const dest = resolveClass(text, selectedSource);
     if (dest && dest !== selectedSource) {
-      e.preventDefault();
-      setSelectedSource(dest);
+      const tgt = decompiled?.[dest]?.content || '';
+      const idx = tgt.split('\n').findIndex(l =>
+        new RegExp(`\\b(?:class|interface|enum|record)\\s+${text}\\b`).test(l));
+      pendingFlashRef.current = idx >= 0 ? idx + 1 : 1;
+      openFile(dest);
+      return;
+    }
+    // Same-file member jump.
+    const mem = outline.find(o => o.name === text && o.kind !== 'class')
+             || outline.find(o => o.name === text);
+    if (mem) { flashLine(mem.line); return; }
+    showToast(`No definition found for “${text}”`);
+  };
+
+  const onSourceMouseMove = (e: React.MouseEvent) => {
+    if (!modDown || !selectedSource || !selectedSource.endsWith('.java')) { clearNavHover(); return; }
+    const t = e.target as HTMLElement;
+    if (t === navHoverElRef.current) return;
+    clearNavHover();
+    if (t.classList && t.classList.contains('class-name')) {
+      const text = (t.textContent || '').trim();
+      if (/^[A-Za-z_$][\w$]*$/.test(text) && resolveClass(text, selectedSource)) {
+        t.classList.add('nav-link');
+        navHoverElRef.current = t;
+      }
     }
   };
+
+  // Quick Open (Ctrl/Cmd+P) fuzzy results over all decompiled files.
+  const quickResults = useMemo(() => {
+    if (!decompiled) return [] as { path: string }[];
+    const paths = Object.keys(decompiled);
+    const q = quickQuery.trim();
+    if (!q) {
+      return paths.filter(p => p.endsWith('.java')).sort().slice(0, 60).map(path => ({ path }));
+    }
+    const scored: { path: string; score: number }[] = [];
+    for (const p of paths) {
+      const name = p.split('/').pop() || p;
+      const sName = fuzzyScore(q, name);
+      const sPath = fuzzyScore(q, p);
+      const score = Math.max(sName != null ? sName + 5 : -1, sPath != null ? sPath : -1);
+      if (score >= 0) scored.push({ path: p, score });
+    }
+    scored.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
+    return scored.slice(0, 60);
+  }, [quickQuery, decompiled]);
+
+  const onQuickKey = (e: React.KeyboardEvent) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); setQuickIndex(i => Math.min(i + 1, quickResults.length - 1)); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setQuickIndex(i => Math.max(i - 1, 0)); }
+    else if (e.key === 'Enter') {
+      e.preventDefault();
+      const r = quickResults[Math.min(quickIndex, quickResults.length - 1)];
+      if (r) { openFile(r.path); setQuickOpen(false); }
+    } else if (e.key === 'Escape') {
+      setQuickOpen(false);
+    }
+  };
+
+  // Breadcrumb: clicking a package segment reveals/expands it in the tree.
+  const revealDir = (dir: string) => {
+    setSourceQuery('');
+    setCollapsedDirs(prev => {
+      const next = new Set(prev);
+      const parts = dir.split('/');
+      for (let i = 0; i < parts.length; i++) next.delete(parts.slice(0, i + 1).join('/'));
+      return next;
+    });
+  };
+
+  const renderBreadcrumb = (path: string) => {
+    const parts = path.split('/');
+    return parts.map((seg, i) => {
+      if (i === parts.length - 1) return <span key={i} className="crumb-seg crumb-current">{seg}</span>;
+      const dir = parts.slice(0, i + 1).join('/');
+      return (
+        <React.Fragment key={i}>
+          <button className="crumb-seg" onClick={() => revealDir(dir)} title={`Reveal ${dir} in tree`}>{seg}</button>
+          <span className="crumb-sep">/</span>
+        </React.Fragment>
+      );
+    });
+  };
+
+  const canBack = nav.index > 0;
+  const canForward = nav.index < nav.stack.length - 1;
 
   const decompiledTree = useMemo(
     () => (decompiledPaths.length ? buildTree(decompiledPaths) : null),
@@ -642,7 +885,7 @@ export default function App() {
     <button
       key={path}
       className={`file-row${selectedSource === path ? ' selected' : ''}`}
-      onClick={() => setSelectedSource(path)}
+      onClick={() => openFile(path)}
       title={path}
     >
       <span className={`file-badge badge-${path.endsWith('.java') ? 'added' : 'nested'}`}>
@@ -697,7 +940,7 @@ export default function App() {
           key={child.path}
           className={`tree-row tree-file${selectedSource === child.path ? ' selected' : ''}`}
           style={{ paddingLeft: depth * 12 + 8 }}
-          onClick={() => setSelectedSource(child.path)}
+          onClick={() => openFile(child.path)}
           title={child.path}
         >
           <span className={`file-badge badge-${isJava ? 'added' : 'nested'}`}>{isJava ? 'J' : 'R'}</span>
@@ -1101,18 +1344,52 @@ export default function App() {
                   {decompiledTree && renderTree(decompiledTree, 0)}
                 </div>
               )}
+              <div className="panel-hints">
+                <span><kbd>⌘</kbd>/<kbd>Ctrl</kbd>+<kbd>P</kbd> go to class</span>
+                <span><kbd>⌘</kbd>/<kbd>Ctrl</kbd>-click a class to jump</span>
+                <span><kbd>Alt</kbd>+<kbd>←</kbd>/<kbd>→</kbd> back / forward</span>
+              </div>
             </aside>
 
             <div className="diff-panel">
               {selectedSource && selectedDecompiledFile ? (
                 <div className="diff-view">
                   <div className="diff-panel-hd">
-                    <span className="diff-crumb">{selectedSource.replace(/\//g, ' / ')}</span>
+                    <div className="nav-controls">
+                      <button className="nav-btn" disabled={!canBack} onClick={navBack} title="Back (Alt+←)">◀</button>
+                      <button className="nav-btn" disabled={!canForward} onClick={navForward} title="Forward (Alt+→)">▶</button>
+                    </div>
+                    <span className="diff-crumb">{renderBreadcrumb(selectedSource)}</span>
                     <div className="file-actions">
                       {selectedSource.endsWith('.java') && (
-                        <span className="nav-hint" title="Hold Ctrl (⌘ on Mac) and click a class name to jump to it">
-                          ⌘/Ctrl-click a class to navigate
-                        </span>
+                        <div className="outline-anchor">
+                          <button
+                            className={`file-action-btn${outlineOpen ? ' active' : ''}`}
+                            onClick={() => setOutlineOpen(o => !o)}
+                            title="Outline / structure"
+                          >
+                            ☰ Outline
+                          </button>
+                          {outlineOpen && (
+                            <div className="outline-pop">
+                              <div className="outline-hd">Structure</div>
+                              <div className="outline-list">
+                                {outline.length === 0 && <div className="outline-empty">No members found</div>}
+                                {outline.map((o, i) => (
+                                  <button
+                                    key={`${o.name}-${o.line}-${i}`}
+                                    className={`outline-row kind-${o.kind}`}
+                                    onClick={() => { flashLine(o.line); setOutlineOpen(false); }}
+                                  >
+                                    <span className="outline-icon">{o.kind === 'method' ? 'ƒ' : o.kind === 'field' ? '▪' : '◆'}</span>
+                                    <span className="outline-name">{o.name}</span>
+                                    <span className="outline-line">{o.line}</span>
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
                       )}
                       <span className={`diff-type-badge badge-${selectedSource.endsWith('.java') ? 'added' : 'nested'}`}>
                         {selectedSource.endsWith('.java') ? 'Java source' : 'Resource'}
@@ -1153,12 +1430,16 @@ export default function App() {
                       <div
                         className={`source-nav${modDown && selectedSource.endsWith('.java') ? ' mod-down' : ''}`}
                         onClick={onSourceClick}
+                        onMouseMove={onSourceMouseMove}
+                        onMouseLeave={clearNavHover}
                       >
                         <SyntaxHighlighter
                           language={langForPath(selectedSource)}
                           style={theme === 'dark' ? oneDark : oneLight}
                           showLineNumbers
                           wrapLongLines={false}
+                          wrapLines
+                          lineProps={(n: number) => ({ id: LINE_ID(n) })}
                           customStyle={{
                             margin: 0,
                             background: 'transparent',
@@ -1196,6 +1477,42 @@ export default function App() {
           )}
         </>
       )}
+
+      {/* ── Quick Open (Ctrl/Cmd+P) ── */}
+      {quickOpen && (
+        <div className="qo-overlay" onClick={() => setQuickOpen(false)}>
+          <div className="qo-modal" onClick={e => e.stopPropagation()}>
+            <input
+              autoFocus
+              className="qo-input"
+              placeholder="Go to class…"
+              value={quickQuery}
+              onChange={e => { setQuickQuery(e.target.value); setQuickIndex(0); }}
+              onKeyDown={onQuickKey}
+              spellCheck={false}
+            />
+            <div className="qo-list">
+              {quickResults.length === 0 && <div className="qo-empty">No matching files</div>}
+              {quickResults.map((r, i) => (
+                <button
+                  key={r.path}
+                  className={`qo-row${i === Math.min(quickIndex, quickResults.length - 1) ? ' active' : ''}`}
+                  onMouseEnter={() => setQuickIndex(i)}
+                  onClick={() => { openFile(r.path); setQuickOpen(false); }}
+                >
+                  <span className={`file-badge badge-${r.path.endsWith('.java') ? 'added' : 'nested'}`}>
+                    {r.path.endsWith('.java') ? 'J' : 'R'}
+                  </span>
+                  <span className="qo-name">{r.path.split('/').pop()}</span>
+                  <span className="qo-path">{r.path}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {toast && <div className="nav-toast">{toast}</div>}
     </div>
   );
 }
