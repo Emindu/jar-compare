@@ -1,4 +1,5 @@
 {
+  "id": "/jar-compare/",
   "name": "JAR Compare — Compare & Decompile Java JAR Files",
   "short_name": "JAR Compare",
   "description": "Free, in-browser tool to compare two Java JAR files and decompile JARs to source.",
@@ -7,12 +8,13 @@
   "display": "standalone",
   "background_color": "#ffffff",
   "theme_color": "#0969da",
+  "categories": ["developer", "utilities", "productivity"],
   "icons": [
     {
       "src": "/jar-compare/favicon.svg",
       "sizes": "any",
       "type": "image/svg+xml",
-      "purpose": "any"
+      "purpose": "any maskable"
     }
   ]
 }
