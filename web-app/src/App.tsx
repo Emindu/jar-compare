@@ -50,6 +50,23 @@ interface DecompiledFile {
   content: string;
 }
 
+interface JarMeta {
+  javaVersion?: string;
+  buildDate?: string;
+  buildJdk?: string;
+  mainClass?: string;
+  implementationVersion?: string;
+  implementationVendor?: string;
+  specificationVersion?: string;
+  maven?: string;
+  classCount?: number;
+  packageCount?: number;
+  resourceCount?: number;
+  totalSize?: number;
+  multiRelease?: boolean;
+  signed?: boolean;
+}
+
 interface CheerpJGlobal {
   cheerpjInit: (options?: any) => Promise<void>;
   cheerpjRunMain: (className: string, classPath: string, ...args: string[]) => Promise<number>;
@@ -148,6 +165,7 @@ export default function App() {
   const [srcJar, setSrcJar] = useState<File | null>(null);
   const [dragActiveD, setDragActiveD] = useState(false);
   const [decompiled, setDecompiled] = useState<Record<string, DecompiledFile> | null>(null);
+  const [decompiledMeta, setDecompiledMeta] = useState<JarMeta | null>(null);
   const [selectedSource, setSelectedSource] = useState<string | null>(null);
   const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(new Set());
   const [sourceQuery, setSourceQuery] = useState('');
@@ -175,6 +193,7 @@ export default function App() {
     setSelectedFile(null);
     setSelectedType(null);
     setDecompiled(null);
+    setDecompiledMeta(null);
     setSrcJar(null);
     setSelectedSource(null);
     setCollapsedDirs(new Set());
@@ -316,9 +335,10 @@ export default function App() {
       window.cheerpOSAddStringFile('/str/input.jar', new Uint8Array(buf));
 
       const jsonResult = await runJava('com.jarcompare.WebJarDecompiler', '/str/input.jar');
-      const parsed = JSON.parse(jsonResult) as { files: Record<string, DecompiledFile> };
+      const parsed = JSON.parse(jsonResult) as { files: Record<string, DecompiledFile>; meta?: JarMeta };
       const files = parsed.files || {};
       setDecompiled(files);
+      setDecompiledMeta(parsed.meta || null);
       // auto-select first .java source for instant feedback
       const firstJava = Object.keys(files).sort().find(p => p.endsWith('.java'));
       setSelectedSource(firstJava || Object.keys(files).sort()[0] || null);
@@ -470,6 +490,31 @@ export default function App() {
   const decompiledPaths = decompiled ? Object.keys(decompiled).sort() : [];
   const javaPaths = decompiledPaths.filter(p => p.endsWith('.java'));
   const resourcePaths = decompiledPaths.filter(p => !p.endsWith('.java'));
+
+  // JAR metadata → bottom info bar
+  const fmtSize = (n: number) =>
+    n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB'
+    : n >= 1024 ? (n / 1024).toFixed(1) + ' KB'
+    : n + ' B';
+
+  const metaItems: { label: string; value: string }[] = [];
+  if (decompiledMeta) {
+    const m = decompiledMeta;
+    if (m.javaVersion)           metaItems.push({ label: '☕ Java', value: m.javaVersion });
+    if (m.multiRelease)          metaItems.push({ label: 'Multi-Release', value: 'yes' });
+    if (m.buildDate)             metaItems.push({ label: 'Built', value: m.buildDate });
+    if (m.buildJdk)              metaItems.push({ label: 'Build JDK', value: m.buildJdk });
+    if (m.mainClass)             metaItems.push({ label: 'Main-Class', value: m.mainClass });
+    if (m.maven)                 metaItems.push({ label: 'Maven', value: m.maven });
+    if (m.implementationVersion) metaItems.push({ label: 'Impl. version', value: m.implementationVersion });
+    if (m.implementationVendor)  metaItems.push({ label: 'Vendor', value: m.implementationVendor });
+    if (m.specificationVersion)  metaItems.push({ label: 'Spec. version', value: m.specificationVersion });
+    if (typeof m.classCount === 'number')    metaItems.push({ label: 'Classes', value: String(m.classCount) });
+    if (typeof m.packageCount === 'number')  metaItems.push({ label: 'Packages', value: String(m.packageCount) });
+    if (typeof m.resourceCount === 'number') metaItems.push({ label: 'Resources', value: String(m.resourceCount) });
+    if (typeof m.totalSize === 'number')     metaItems.push({ label: 'Size', value: fmtSize(m.totalSize) });
+    if (m.signed)                metaItems.push({ label: 'Signed', value: 'yes' });
+  }
   const selectedDecompiledFile = selectedSource && decompiled ? decompiled[selectedSource] : null;
 
   const decompiledTree = useMemo(
@@ -1016,6 +1061,17 @@ export default function App() {
               )}
             </div>
           </div>
+
+          {metaItems.length > 0 && (
+            <div className="meta-bar" aria-label="JAR metadata">
+              {metaItems.map(it => (
+                <span className="meta-item" key={it.label}>
+                  <span className="meta-label">{it.label}</span>
+                  <span className="meta-value">{it.value}</span>
+                </span>
+              ))}
+            </div>
+          )}
         </>
       )}
     </div>
