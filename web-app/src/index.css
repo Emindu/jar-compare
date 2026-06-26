@@ -966,11 +966,15 @@ body {
 }
 
 /* ── Decompile: IDE-style code navigation ───────────────────────────────── */
-/* Only tokens that resolve to a local class get the link treatment (set in JS). */
-.source-nav .token.nav-link {
+/* Reading mode: text cursor. */
+.source-nav { cursor: text; }
+/* Nav mode (Ctrl/Cmd held): switch to default so pointer on tokens stands out. */
+.source-nav.mod-down { cursor: default; user-select: none; }
+/* Tokens that resolve to a local class or method get the link treatment (set in JS). */
+.source-nav .nav-link {
   text-decoration: underline;
   text-underline-offset: 2px;
-  cursor: pointer;
+  cursor: pointer !important;
   color: var(--accent) !important;
 }
 
