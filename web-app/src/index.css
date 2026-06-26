@@ -932,3 +932,35 @@ body {
   transition: background 0.12s, color 0.12s;
 }
 .file-action-btn:hover { background: var(--surface-2); color: var(--text); }
+
+/* ── Decompile: JAR metadata bottom bar ─────────────────────────────────── */
+.meta-bar {
+  flex-shrink: 0;
+  height: var(--stats-h);
+  display: flex;
+  align-items: center;
+  gap: 1.1rem;
+  padding: 0 1.25rem;
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  overflow-x: auto;
+  white-space: nowrap;
+  font-size: 0.76rem;
+}
+
+.meta-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-shrink: 0;
+}
+
+.meta-label { color: var(--text-muted); }
+
+.meta-value {
+  font-family: var(--font-mono);
+  color: var(--text);
+  max-width: 320px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
