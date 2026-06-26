@@ -138,6 +138,28 @@ function langForPath(p: string): string {
   }
 }
 
+// Extract an outline (classes / methods / fields) from decompiled Java source.
+// Heuristic: works on CFR's 4-space-indented output.
+function parseOutline(content: string): { kind: 'class' | 'method' | 'field'; name: string; line: number }[] {
+  const out: { kind: 'class' | 'method' | 'field'; name: string; line: number }[] = [];
+  if (!content) return out;
+  const lines = content.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const ln = lines[i];
+    let m = ln.match(/^(?:public |private |protected |final |abstract |static |sealed )*(class|interface|enum|record|@interface)\s+([A-Za-z_$][\w$]*)/);
+    if (m) { out.push({ kind: 'class', name: m[2], line: i + 1 }); continue; }
+    if (!/^ {4}\S/.test(ln)) continue;
+    m = ln.match(/(?:^| )([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*(?:throws [\w$., ]+)?\s*[{;]/);
+    if (m && !['if', 'for', 'while', 'switch', 'catch', 'return', 'new', 'synchronized'].includes(m[1])) {
+      out.push({ kind: 'method', name: m[1], line: i + 1 });
+      continue;
+    }
+    m = ln.match(/^ {4}(?:public |private |protected |static |final |volatile |transient )*[\w$.<>\[\], ]+\s+([A-Za-z_$][\w$]*)\s*(?:=|;)/);
+    if (m) out.push({ kind: 'field', name: m[1], line: i + 1 });
+  }
+  return out;
+}
+
 // Lightweight fuzzy subsequence scorer for Quick Open. Returns null if the
 // query isn't a subsequence of the target; higher score = better match.
 function fuzzyScore(query: string, target: string): number | null {
@@ -721,38 +743,42 @@ export default function App() {
     return null; // ambiguous — don't guess
   };
 
-  // Parse the current file into an outline of top-level members (heuristic,
-  // works on CFR's 4-space-indented output). Used by the structure popup and
+  // Parse the current file into an outline. Used by the structure popup and
   // for same-file member jumps.
   const outline = useMemo(() => {
-    const out: { kind: 'class' | 'method' | 'field'; name: string; line: number }[] = [];
-    if (!selectedSource || !selectedSource.endsWith('.java')) return out;
+    if (!selectedSource || !selectedSource.endsWith('.java')) return [] as ReturnType<typeof parseOutline>;
     const content = (decompiled && decompiled[selectedSource]?.encoding === 'utf8')
       ? decompiled[selectedSource].content : '';
-    if (!content) return out;
-    const lines = content.split('\n');
-    for (let i = 0; i < lines.length; i++) {
-      const ln = lines[i];
-      let m = ln.match(/^(?:public |private |protected |final |abstract |static |sealed )*(class|interface|enum|record|@interface)\s+([A-Za-z_$][\w$]*)/);
-      if (m) { out.push({ kind: 'class', name: m[2], line: i + 1 }); continue; }
-      if (!/^ {4}\S/.test(ln)) continue; // only one-indent members
-      m = ln.match(/(?:^| )([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*(?:throws [\w$., ]+)?\s*[{;]/);
-      if (m && !['if', 'for', 'while', 'switch', 'catch', 'return', 'new', 'synchronized'].includes(m[1])) {
-        out.push({ kind: 'method', name: m[1], line: i + 1 });
-        continue;
-      }
-      m = ln.match(/^ {4}(?:public |private |protected |static |final |volatile |transient )*[\w$.<>\[\], ]+\s+([A-Za-z_$][\w$]*)\s*(?:=|;)/);
-      if (m) out.push({ kind: 'field', name: m[1], line: i + 1 });
-    }
-    return out;
+    return parseOutline(content);
   }, [selectedSource, decompiled]);
+
+  // Resolve a method/function name to a file + line. Checks the current file
+  // outline first, then all other local Java files.
+  const resolveMethod = (name: string): { path: string; line: number } | null => {
+    if (!decompiled || !selectedSource) return null;
+    const local = outline.find(o => o.name === name && o.kind === 'method');
+    if (local) return { path: selectedSource, line: local.line };
+    for (const path of classIndex.all) {
+      if (path === selectedSource) continue;
+      const f = decompiled[path];
+      if (!f || f.encoding !== 'utf8') continue;
+      const members = parseOutline(f.content);
+      const match = members.find(o => o.name === name && o.kind === 'method');
+      if (match) return { path, line: match.line };
+    }
+    return null;
+  };
 
   const onSourceClick = (e: React.MouseEvent) => {
     if (!(e.ctrlKey || e.metaKey) || !selectedSource) return;
-    const text = ((e.target as HTMLElement).textContent || '').trim();
+    const raw = e.target as HTMLElement;
+    // Walk up to the nearest Prism token span so we reliably pick up the text.
+    const tok = raw.closest?.('.token') as HTMLElement | null;
+    const text = ((tok || raw).textContent || '').trim();
     if (!/^[A-Za-z_$][\w$]*$/.test(text)) return;
     e.preventDefault();
 
+    // 1. Navigate to a local class.
     const dest = resolveClass(text, selectedSource);
     if (dest && dest !== selectedSource) {
       const tgt = decompiled?.[dest]?.content || '';
@@ -762,24 +788,44 @@ export default function App() {
       openFile(dest);
       return;
     }
-    // Same-file member jump.
+
+    // 2. Same-file member jump (method or field).
     const mem = outline.find(o => o.name === text && o.kind !== 'class')
              || outline.find(o => o.name === text);
     if (mem) { flashLine(mem.line); return; }
+
+    // 3. Cross-file method navigation.
+    const resolved = resolveMethod(text);
+    if (resolved) {
+      if (resolved.path !== selectedSource) {
+        pendingFlashRef.current = resolved.line;
+        openFile(resolved.path);
+      } else {
+        flashLine(resolved.line);
+      }
+      return;
+    }
+
     showToast(`No definition found for “${text}”`);
   };
 
   const onSourceMouseMove = (e: React.MouseEvent) => {
     if (!modDown || !selectedSource || !selectedSource.endsWith('.java')) { clearNavHover(); return; }
-    const t = e.target as HTMLElement;
+    const raw = e.target as HTMLElement;
+    // Walk up to the nearest Prism token span. Prism can nest spans inside
+    // class-name / function tokens, so e.target may be a child, not the token.
+    const t = raw.closest?.('.token') as HTMLElement | null;
+    if (!t) { clearNavHover(); return; }
     if (t === navHoverElRef.current) return;
     clearNavHover();
-    if (t.classList && t.classList.contains('class-name')) {
-      const text = (t.textContent || '').trim();
-      if (/^[A-Za-z_$][\w$]*$/.test(text) && resolveClass(text, selectedSource)) {
-        t.classList.add('nav-link');
-        navHoverElRef.current = t;
-      }
+    const text = (t.textContent || '').trim();
+    if (!/^[A-Za-z_$][\w$]*$/.test(text)) return;
+    if (t.classList.contains('class-name') && resolveClass(text, selectedSource)) {
+      t.classList.add('nav-link');
+      navHoverElRef.current = t;
+    } else if (t.classList.contains('function') && resolveMethod(text)) {
+      t.classList.add('nav-link');
+      navHoverElRef.current = t;
     }
   };
 
