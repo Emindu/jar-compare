@@ -572,7 +572,7 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = srcJar.name.replace(/\.(jar|war)$/i, '') + '-sources.zip';
+    a.download = srcJar.name.replace(/\.(jar|war|ear)$/i, '') + '-sources.zip';
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -1094,7 +1094,7 @@ export default function App() {
         <main className="upload-page">
           <div className="upload-card">
             <div className="upload-heading">
-              <h1 className="upload-title">Compare JAR / WAR files</h1>
+              <h1 className="upload-title">Compare JAR / WAR / EAR files</h1>
               <p className="upload-sub">Side-by-side diff of classes, resources &amp; nested JARs — runs entirely in your browser</p>
             </div>
 
@@ -1104,15 +1104,15 @@ export default function App() {
                 onDragEnter={e => handleDrag(e, setDragActive1)}
                 onDragOver={e  => handleDrag(e, setDragActive1)}
                 onDragLeave={e => handleDrag(e, setDragActive1)}
-                onDrop={e => handleDrop(e, setJar1File, setDragActive1, ['.jar', '.war'])}
+                onDrop={e => handleDrop(e, setJar1File, setDragActive1, ['.jar', '.war', '.ear'])}
               >
                 <label>
-                  <span className="dz-label">Original JAR / WAR</span>
+                  <span className="dz-label">Original JAR / WAR / EAR</span>
                   <span className={`dz-file${jar1File ? ' dz-file--set' : ''}`}>
-                    {jar1File ? jar1File.name : 'Drop .jar/.war or click to browse'}
+                    {jar1File ? jar1File.name : 'Drop .jar/.war/.ear or click to browse'}
                   </span>
                   {jar1File && <span className="dz-meta">{(jar1File.size / 1024 / 1024).toFixed(1)} MB</span>}
-                  <input type="file" accept=".jar,.war" onChange={e => setJar1File(e.target.files?.[0] || null)} />
+                  <input type="file" accept=".jar,.war,.ear" onChange={e => setJar1File(e.target.files?.[0] || null)} />
                 </label>
               </div>
 
@@ -1123,15 +1123,15 @@ export default function App() {
                 onDragEnter={e => handleDrag(e, setDragActive2)}
                 onDragOver={e  => handleDrag(e, setDragActive2)}
                 onDragLeave={e => handleDrag(e, setDragActive2)}
-                onDrop={e => handleDrop(e, setJar2File, setDragActive2, ['.jar', '.war'])}
+                onDrop={e => handleDrop(e, setJar2File, setDragActive2, ['.jar', '.war', '.ear'])}
               >
                 <label>
-                  <span className="dz-label">New JAR / WAR</span>
+                  <span className="dz-label">New JAR / WAR / EAR</span>
                   <span className={`dz-file${jar2File ? ' dz-file--set' : ''}`}>
-                    {jar2File ? jar2File.name : 'Drop .jar/.war or click to browse'}
+                    {jar2File ? jar2File.name : 'Drop .jar/.war/.ear or click to browse'}
                   </span>
                   {jar2File && <span className="dz-meta">{(jar2File.size / 1024 / 1024).toFixed(1)} MB</span>}
-                  <input type="file" accept=".jar,.war" onChange={e => setJar2File(e.target.files?.[0] || null)} />
+                  <input type="file" accept=".jar,.war,.ear" onChange={e => setJar2File(e.target.files?.[0] || null)} />
                 </label>
               </div>
             </div>
@@ -1157,7 +1157,7 @@ export default function App() {
         <main className="upload-page">
           <div className="upload-card">
             <div className="upload-heading">
-              <h1 className="upload-title">Decompile a JAR / WAR</h1>
+              <h1 className="upload-title">Decompile a JAR / WAR / EAR</h1>
               <p className="upload-sub">De-archive &amp; decompile bytecode back to Java source, then download it — all in your browser</p>
             </div>
 
@@ -1167,15 +1167,15 @@ export default function App() {
                 onDragEnter={e => handleDrag(e, setDragActiveD)}
                 onDragOver={e  => handleDrag(e, setDragActiveD)}
                 onDragLeave={e => handleDrag(e, setDragActiveD)}
-                onDrop={e => handleDrop(e, setSrcJar, setDragActiveD, ['.jar', '.war'])}
+                onDrop={e => handleDrop(e, setSrcJar, setDragActiveD, ['.jar', '.war', '.ear'])}
               >
                 <label>
-                  <span className="dz-label">JAR / WAR to decompile</span>
+                  <span className="dz-label">JAR / WAR / EAR to decompile</span>
                   <span className={`dz-file${srcJar ? ' dz-file--set' : ''}`}>
-                    {srcJar ? srcJar.name : 'Drop .jar/.war or click to browse'}
+                    {srcJar ? srcJar.name : 'Drop .jar/.war/.ear or click to browse'}
                   </span>
                   {srcJar && <span className="dz-meta">{(srcJar.size / 1024 / 1024).toFixed(1)} MB</span>}
-                  <input type="file" accept=".jar,.war" onChange={e => setSrcJar(e.target.files?.[0] || null)} />
+                  <input type="file" accept=".jar,.war,.ear" onChange={e => setSrcJar(e.target.files?.[0] || null)} />
                 </label>
               </div>
             </div>
