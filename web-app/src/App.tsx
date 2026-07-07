@@ -15,6 +15,8 @@ import bash from 'react-syntax-highlighter/dist/esm/languages/prism/bash';
 import javascript from 'react-syntax-highlighter/dist/esm/languages/prism/javascript';
 import css from 'react-syntax-highlighter/dist/esm/languages/prism/css';
 import JSZip from 'jszip';
+import { parseJfr, type JfrResult } from './jfr';
+import Profiler from './Profiler';
 import './index.css';
 
 SyntaxHighlighter.registerLanguage('java', java);
@@ -76,7 +78,7 @@ interface CheerpJGlobal {
 
 declare const window: Window & typeof globalThis & CheerpJGlobal;
 
-type Mode = 'compare' | 'decompile';
+type Mode = 'compare' | 'decompile' | 'profile';
 
 type FileStatus = 'modifiedClasses' | 'modified' | 'added' | 'removed' | 'identicalSourceClasses' | 'nestedChanges';
 
@@ -212,6 +214,11 @@ export default function App() {
   const [copied, setCopied] = useState(false);
   const [modDown, setModDown] = useState(false); // Ctrl/Cmd held → nav affordance
   const sourceScrollRef = useRef<HTMLDivElement | null>(null);
+
+  // profile (JFR) state
+  const [jfrFile, setJfrFile] = useState<File | null>(null);
+  const [dragActiveP, setDragActiveP] = useState(false);
+  const [jfrResult, setJfrResult] = useState<JfrResult | null>(null);
 
   // IDE navigation: history, quick-open, outline, toast
   const [nav, setNav] = useState<{ stack: string[]; index: number }>({ stack: [], index: -1 });
@@ -366,6 +373,8 @@ export default function App() {
     setSelectedSource(null);
     setCollapsedDirs(new Set());
     setSourceQuery('');
+    setJfrFile(null);
+    setJfrResult(null);
     setProgressText('');
     navRef.current = { stack: [], index: -1 };
     setNav({ stack: [], index: -1 });
@@ -396,17 +405,15 @@ export default function App() {
     e: React.DragEvent,
     setFile: (f: File | null) => void,
     setActive: (v: boolean) => void,
-    exts: string | string[] = '.jar',
+    ext = '.jar',
   ) => {
     e.preventDefault();
     e.stopPropagation();
     setActive(false);
     const file = e.dataTransfer.files?.[0];
     if (file) {
-      const name = file.name.toLowerCase();
-      const ok = Array.isArray(exts) ? exts.some(x => name.endsWith(x)) : name.endsWith(exts);
-      if (ok) setFile(file);
-      else alert(`Please drop a valid ${Array.isArray(exts) ? exts.join(' or ') : exts} file`);
+      if (file.name.toLowerCase().endsWith(ext)) setFile(file);
+      else alert(`Please drop a valid ${ext} file`);
     }
   };
 
@@ -528,6 +535,24 @@ export default function App() {
     } catch (e) {
       console.error(e);
       alert('Error decompiling jar: ' + e);
+    } finally {
+      setIsProcessing(false);
+      setProgressText('');
+    }
+  };
+
+  const handleProfile = async () => {
+    if (!jfrFile) return;
+    setIsProcessing(true);
+    setProgressText('Parsing recording…');
+    try {
+      // JFR parsing is pure client-side data work — no CheerpJ/JVM needed.
+      const buf = await jfrFile.arrayBuffer();
+      const result = parseJfr(buf);
+      setJfrResult(result);
+    } catch (e) {
+      console.error(e);
+      alert('Could not parse this .jfr file: ' + e);
     } finally {
       setIsProcessing(false);
       setProgressText('');
@@ -1003,7 +1028,7 @@ export default function App() {
     });
   };
 
-  const hasResults = !!diffResult || !!decompiled;
+  const hasResults = !!diffResult || !!decompiled || !!jfrResult;
 
   return (
     <div className={`app${hasResults ? ' has-results' : ''}`}>
@@ -1019,6 +1044,7 @@ export default function App() {
             <div className="mode-tabs">
               <button className={`mode-tab${mode === 'compare' ? ' active' : ''}`} onClick={() => switchMode('compare')}>Compare</button>
               <button className={`mode-tab${mode === 'decompile' ? ' active' : ''}`} onClick={() => switchMode('decompile')}>Decompile</button>
+              <button className={`mode-tab${mode === 'profile' ? ' active' : ''}`} onClick={() => switchMode('profile')}>Profile</button>
             </div>
           )}
 
@@ -1033,6 +1059,12 @@ export default function App() {
             <div className="navbar-jars">
               <span className="jar-pill">{srcJar.name}</span>
               <span className="jar-arrow">⇣ sources</span>
+            </div>
+          )}
+          {jfrResult && jfrFile && (
+            <div className="navbar-jars">
+              <span className="jar-pill">{jfrFile.name}</span>
+              <span className="jar-arrow">📊 profile</span>
             </div>
           )}
         </div>
@@ -1162,6 +1194,50 @@ export default function App() {
         </main>
       )}
 
+      {/* ── Upload page: PROFILE (JFR) ───────────── */}
+      {mode === 'profile' && !jfrResult && (
+        <main className="upload-page">
+          <div className="upload-card">
+            <div className="upload-heading">
+              <h1 className="upload-title">Analyze a JFR recording</h1>
+              <p className="upload-sub">Open a Java Flight Recorder <code>.jfr</code> file and explore a flame graph &amp; hot methods — parsed entirely in your browser</p>
+            </div>
+
+            <div className="dropzone-row">
+              <div
+                className={`dropzone dropzone--single${dragActiveP ? ' drag-active' : ''}${jfrFile ? ' has-file' : ''}`}
+                onDragEnter={e => handleDrag(e, setDragActiveP)}
+                onDragOver={e  => handleDrag(e, setDragActiveP)}
+                onDragLeave={e => handleDrag(e, setDragActiveP)}
+                onDrop={e => handleDrop(e, setJfrFile, setDragActiveP, '.jfr')}
+              >
+                <label>
+                  <span className="dz-label">JFR recording</span>
+                  <span className={`dz-file${jfrFile ? ' dz-file--set' : ''}`}>
+                    {jfrFile ? jfrFile.name : 'Drop .jfr or click to browse'}
+                  </span>
+                  {jfrFile && <span className="dz-meta">{(jfrFile.size / 1024 / 1024).toFixed(1)} MB</span>}
+                  <input type="file" accept=".jfr" onChange={e => setJfrFile(e.target.files?.[0] || null)} />
+                </label>
+              </div>
+            </div>
+
+            <div className="upload-actions">
+              <button className="btn btn-primary" disabled={!jfrFile || isProcessing} onClick={handleProfile}>
+                {isProcessing ? 'Parsing…' : 'Analyze recording'}
+              </button>
+            </div>
+
+            {isProcessing && (
+              <div className="progress-wrap">
+                <div className="progress-track"><div className="progress-bar" /></div>
+                <div className="progress-text">{progressText || 'Working…'}</div>
+              </div>
+            )}
+          </div>
+        </main>
+      )}
+
       {/* ── Landing usage / SEO content (shown on the home screen) ── */}
       {!hasResults && (
         <>
@@ -1229,6 +1305,7 @@ export default function App() {
                   <div className="feature-card"><h3>🔍 Source-level diffs</h3><p>Changed <code>.class</code> files are decompiled so you read Java, not bytecode.</p></div>
                   <div className="feature-card"><h3>🪆 Nested JARs</h3><p>Recurses into JARs packaged inside JARs, like Spring Boot fat JARs.</p></div>
                   <div className="feature-card"><h3>🧩 Decompile to source</h3><p>Turn any JAR back into a browsable, downloadable Java source tree.</p></div>
+                  <div className="feature-card"><h3>📊 JFR flame graphs</h3><p>Open a Java Flight Recorder <code>.jfr</code> file and explore CPU hot methods as an interactive flame graph.</p></div>
                   <div className="feature-card"><h3>🔒 100% private</h3><p>Your JARs never leave your machine — everything runs in the browser.</p></div>
                   <div className="feature-card"><h3>⚡ No install, free</h3><p>No account, no upload, no setup. Open the page and go.</p></div>
                 </div>
@@ -1530,6 +1607,9 @@ export default function App() {
           )}
         </>
       )}
+
+      {/* ── Results: PROFILE (JFR) ───────────────── */}
+      {jfrResult && <Profiler result={jfrResult} />}
 
       {/* ── Quick Open (Ctrl/Cmd+P) ── */}
       {quickOpen && (
