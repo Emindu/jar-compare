@@ -405,15 +405,17 @@ export default function App() {
     e: React.DragEvent,
     setFile: (f: File | null) => void,
     setActive: (v: boolean) => void,
-    ext = '.jar',
+    exts: string | string[] = '.jar',
   ) => {
     e.preventDefault();
     e.stopPropagation();
     setActive(false);
     const file = e.dataTransfer.files?.[0];
     if (file) {
-      if (file.name.toLowerCase().endsWith(ext)) setFile(file);
-      else alert(`Please drop a valid ${ext} file`);
+      const name = file.name.toLowerCase();
+      const ok = Array.isArray(exts) ? exts.some(x => name.endsWith(x)) : name.endsWith(exts);
+      if (ok) setFile(file);
+      else alert(`Please drop a valid ${Array.isArray(exts) ? exts.join(' or ') : exts} file`);
     }
   };
 
