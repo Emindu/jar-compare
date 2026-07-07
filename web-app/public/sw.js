@@ -11,7 +11,7 @@
  *    are passed straight through, so the *first* compare/decompile still
  *    needs a network connection.
  */
-const VERSION = 'v1';
+const VERSION = 'v2';
 const APP_CACHE = `jarcompare-app-${VERSION}`;
 const CDN_CACHE = `jarcompare-cdn-${VERSION}`;
 
