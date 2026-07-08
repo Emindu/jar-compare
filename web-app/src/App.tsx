@@ -119,6 +119,11 @@ function buildTree(paths: string[]): TreeNode {
   return root;
 }
 
+// A path that points at a nested Java archive (jar/war/ear) we can drill into.
+function isArchivePath(p: string): boolean {
+  return /\.(jar|war|ear)$/i.test(p);
+}
+
 // Map a file path to a Prism language id for syntax highlighting.
 function langForPath(p: string): string {
   const ext = p.split('.').pop()?.toLowerCase();
@@ -213,6 +218,8 @@ export default function App() {
   const [sourceQuery, setSourceQuery] = useState('');
   const [copied, setCopied] = useState(false);
   const [modDown, setModDown] = useState(false); // Ctrl/Cmd held → nav affordance
+  const [expandingArchive, setExpandingArchive] = useState<string | null>(null); // nested jar being decompiled
+  const nestedSeq = useRef(0); // unique CheerpJ temp-file names for nested jars
   const sourceScrollRef = useRef<HTMLDivElement | null>(null);
 
   // profile (JFR) state
@@ -372,6 +379,7 @@ export default function App() {
     setSrcJar(null);
     setSelectedSource(null);
     setCollapsedDirs(new Set());
+    setExpandingArchive(null);
     setSourceQuery('');
     setJfrFile(null);
     setJfrResult(null);
@@ -539,6 +547,66 @@ export default function App() {
       alert('Error decompiling jar: ' + e);
     } finally {
       setIsProcessing(false);
+      setProgressText('');
+    }
+  };
+
+  // Decode a base64 string to raw bytes (for feeding a nested jar back to CheerpJ).
+  const base64ToBytes = (b64: string): Uint8Array => {
+    const bin = atob(b64);
+    const bytes = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    return bytes;
+  };
+
+  // Drill into a nested jar/war/ear: decompile it with the same Java workflow and
+  // merge the results back into the tree, keyed under the archive's own path so
+  // its contents render as an expandable node beneath it.
+  const decompileNested = async (path: string) => {
+    if (!decompiled || expandingArchive) return;
+    const f = decompiled[path];
+    if (!f) return;
+
+    // Already expanded? Just make sure it's revealed.
+    const prefix = path + '/';
+    if (Object.keys(decompiled).some(k => k.startsWith(prefix))) {
+      setCollapsedDirs(prev => { const n = new Set(prev); n.delete(path); return n; });
+      return;
+    }
+    if (f.encoding !== 'base64') { showToast('Not a binary archive'); return; }
+
+    const label = path.split('/').pop() || 'archive';
+    setExpandingArchive(path);
+    setProgressText(`Decompiling ${label} …`);
+    try {
+      const bytes = base64ToBytes(f.content);
+      await ensureCheerpJ();
+      const tmp = `/str/nested-${nestedSeq.current++}.jar`;
+      window.cheerpOSAddStringFile(tmp, bytes);
+
+      const jsonResult = await runJava('com.jarcompare.WebJarDecompiler', tmp);
+      const parsed = JSON.parse(jsonResult) as { files: Record<string, DecompiledFile> };
+      const inner = parsed.files || {};
+      const count = Object.keys(inner).length;
+      if (count === 0) { showToast(`Nothing to decompile in ${label}`); return; }
+
+      setDecompiled(prev => {
+        const next = { ...(prev || {}) };
+        for (const [ip, ifile] of Object.entries(inner)) next[prefix + ip] = ifile;
+        return next;
+      });
+      setCollapsedDirs(prev => { const n = new Set(prev); n.delete(path); return n; });
+
+      // Open the first source of the nested archive for instant feedback.
+      const firstJava = Object.keys(inner).sort().find(p => p.endsWith('.java'));
+      const firstAny = firstJava || Object.keys(inner).sort()[0];
+      if (firstAny) openFile(prefix + firstAny);
+      showToast(`Decompiled ${count} files from ${label}`);
+    } catch (e) {
+      console.error(e);
+      showToast(`Could not decompile ${label}`);
+    } finally {
+      setExpandingArchive(null);
       setProgressText('');
     }
   };
@@ -982,8 +1050,12 @@ export default function App() {
   // Recursively render a package/path tree. Single-child package chains are
   // collapsed (e.g. com/example/util → com.example.util) like an IDE.
   const renderTree = (node: TreeNode, depth: number): React.ReactNode[] => {
+    // A decompiled nested archive is a file node that also has children — group
+    // it with folders so expandable rows sort above plain leaf files.
+    const expandable = (n: TreeNode) => !n.isFile || (isArchivePath(n.path) && n.children.size > 0);
     const children = [...node.children.values()].sort((a, b) => {
-      if (a.isFile !== b.isFile) return a.isFile ? 1 : -1; // folders first
+      const ea = expandable(a), eb = expandable(b);
+      if (ea !== eb) return ea ? -1 : 1; // folders / expanded archives first
       return a.name.localeCompare(b.name);
     });
 
@@ -1014,17 +1086,44 @@ export default function App() {
           </div>
         );
       }
+      // A nested archive that's already been decompiled renders as an
+      // expandable node (jar path is both a file and a folder of sources).
+      if (isArchivePath(child.path) && child.children.size > 0) {
+        const collapsed = collapsedDirs.has(child.path);
+        return (
+          <div key={child.path}>
+            <button
+              className="tree-row tree-dir tree-archive"
+              style={{ paddingLeft: depth * 12 + 8 }}
+              onClick={() => toggleDir(child.path)}
+              title={`${child.path} (decompiled)`}
+            >
+              <span className="tree-caret">{collapsed ? '▸' : '▾'}</span>
+              <span className="tree-icon">📦</span>
+              <span className="tree-name">{child.name}</span>
+            </button>
+            {!collapsed && renderTree(child, depth + 1)}
+          </div>
+        );
+      }
+
       const isJava = child.path.endsWith('.java');
+      const isArchive = isArchivePath(child.path);
+      const busy = expandingArchive === child.path;
       return (
         <button
           key={child.path}
-          className={`tree-row tree-file${selectedSource === child.path ? ' selected' : ''}`}
+          className={`tree-row tree-file${selectedSource === child.path ? ' selected' : ''}${isArchive ? ' tree-archive-leaf' : ''}${busy ? ' busy' : ''}`}
           style={{ paddingLeft: depth * 12 + 8 }}
           onClick={() => openFile(child.path)}
-          title={child.path}
+          onDoubleClick={isArchive ? () => decompileNested(child.path) : undefined}
+          title={isArchive ? `${child.path} — double-click to decompile` : child.path}
         >
-          <span className={`file-badge badge-${isJava ? 'added' : 'nested'}`}>{isJava ? 'J' : 'R'}</span>
+          <span className={`file-badge badge-${isArchive ? 'archive' : isJava ? 'added' : 'nested'}`}>
+            {isArchive ? '⧉' : isJava ? 'J' : 'R'}
+          </span>
           <span className="tree-name">{child.name}</span>
+          {isArchive && <span className="tree-archive-hint">{busy ? '…' : '⤵'}</span>}
         </button>
       );
     });
@@ -1480,6 +1579,7 @@ export default function App() {
                 <span><kbd>⌘</kbd>/<kbd>Ctrl</kbd>+<kbd>P</kbd> go to class</span>
                 <span><kbd>⌘</kbd>/<kbd>Ctrl</kbd>-click a class to jump</span>
                 <span><kbd>Alt</kbd>+<kbd>←</kbd>/<kbd>→</kbd> back / forward</span>
+                <span>Double-click a nested <kbd>.jar</kbd> to decompile it</span>
               </div>
             </aside>
 
@@ -1553,11 +1653,27 @@ export default function App() {
                   </div>
                   <div className="diff-body" ref={sourceScrollRef}>
                     {selectedDecompiledFile.encoding === 'base64' ? (
-                      <div className="diff-empty">
-                        <span className="diff-empty-icon">▢</span>
-                        <p>Binary file — not previewable</p>
-                        <p className="diff-empty-sub">Included in the downloaded archive</p>
-                      </div>
+                      isArchivePath(selectedSource) ? (
+                        <div className="diff-empty">
+                          <span className="diff-empty-icon">📦</span>
+                          <p>Nested archive</p>
+                          <p className="diff-empty-sub">Decompile it to browse its classes &amp; resources inline.</p>
+                          <button
+                            className="btn btn-primary"
+                            disabled={expandingArchive === selectedSource}
+                            onClick={() => decompileNested(selectedSource)}
+                          >
+                            {expandingArchive === selectedSource ? 'Decompiling…' : '⧉ Decompile this archive'}
+                          </button>
+                          <p className="diff-empty-sub">Tip: double-click a nested <code>.jar</code>/<code>.war</code>/<code>.ear</code> in the tree to decompile it.</p>
+                        </div>
+                      ) : (
+                        <div className="diff-empty">
+                          <span className="diff-empty-icon">▢</span>
+                          <p>Binary file — not previewable</p>
+                          <p className="diff-empty-sub">Included in the downloaded archive</p>
+                        </div>
+                      )
                     ) : (
                       <div
                         className={`source-nav${modDown && selectedSource.endsWith('.java') ? ' mod-down' : ''}`}
