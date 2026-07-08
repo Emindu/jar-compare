@@ -561,6 +561,7 @@ body {
 .badge-removed                          { background: var(--red-bg);    color: var(--red-text);    }
 .badge-identical                        { background: var(--purple-bg); color: var(--purple-text); }
 .badge-nested                           { background: var(--teal-bg);   color: var(--teal-text);   }
+.badge-archive                          { background: var(--amber-bg);  color: var(--amber-text);  }
 
 .file-row-name {
   overflow: hidden;
@@ -609,6 +610,22 @@ body {
 
 .tree-dir { color: var(--text-muted); font-weight: 500; }
 .tree-dir:hover { color: var(--text); }
+
+/* Expanded nested archive shows as a folder-like node with normal text. */
+.tree-archive { color: var(--text); font-weight: 600; }
+
+/* Un-expanded nested archive: subtle "drill in" affordance on hover. */
+.tree-archive-leaf .tree-archive-hint {
+  margin-left: auto;
+  padding-left: 0.4rem;
+  color: var(--text-muted);
+  opacity: 0;
+  font-size: 0.8rem;
+  transition: opacity 0.12s ease;
+}
+.tree-archive-leaf:hover .tree-archive-hint { opacity: 0.8; }
+.tree-archive-leaf.busy { opacity: 0.7; cursor: progress; }
+.tree-archive-leaf.busy .tree-archive-hint { opacity: 1; }
 
 .tree-name {
   overflow: hidden;
