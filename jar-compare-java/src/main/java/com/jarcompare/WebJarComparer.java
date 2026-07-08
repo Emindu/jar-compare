@@ -39,6 +39,7 @@ public class WebJarComparer {
         result.add("removed", new JsonArray());
         result.add("modifiedClasses", new JsonArray());
         result.add("modified", new JsonArray());
+        result.add("modifiedNested", new JsonArray());
 
         JsonObject fileContents = new JsonObject();
         result.add("contents", fileContents);
@@ -102,20 +103,16 @@ public class WebJarComparer {
             fileContents.add(prefix + s, contentObj);
         }
 
+        JsonArray modNestedArr = result.getAsJsonArray("modifiedNested");
+
         // Modified files content
         for (String s : modifiedOther) {
-            if (s.endsWith(".jar")) {
-                System.out.println("PROGRESS_MSG:Entering nested JAR: " + s + " ...");
-                Path t1 = Files.createTempFile(tempDir, "nested1-", ".jar");
-                Path t2 = Files.createTempFile(tempDir, "nested2-", ".jar");
-
-                extractRawFile(jar1, s, t1);
-                extractRawFile(jar2, s, t2);
-
-                compareJarsRecursive(t1.toFile(), t2.toFile(), prefix + s + " -> ", result, fileContents, tempDir);
-
-                Files.deleteIfExists(t1);
-                Files.deleteIfExists(t2);
+            if (isNestedArchive(s)) {
+                // A changed nested archive (jar/war/ear). Rather than eagerly
+                // recursing and decompiling everything inside it up front, report
+                // it as a single entry. The web UI drills into it on demand,
+                // re-running this comparer on the two nested archives.
+                modNestedArr.add(prefix + s);
             } else {
                 modOtherArr.add(prefix + s);
                 JsonObject contentObj = new JsonObject();
@@ -134,15 +131,10 @@ public class WebJarComparer {
         }
     }
 
-    private static void extractRawFile(File jarFile, String filename, Path dest) throws Exception {
-        try (ZipFile zip = new ZipFile(jarFile)) {
-            ZipEntry entry = zip.getEntry(filename);
-            if (entry != null) {
-                try (InputStream is = zip.getInputStream(entry)) {
-                    Files.copy(is, dest, StandardCopyOption.REPLACE_EXISTING);
-                }
-            }
-        }
+    /** True for nested Java archives we can drill into (jar/war/ear). */
+    private static boolean isNestedArchive(String name) {
+        String n = name.toLowerCase();
+        return n.endsWith(".jar") || n.endsWith(".war") || n.endsWith(".ear");
     }
 
     private static String getFileContent(File jarFile, String filename, Path tempDir) {
