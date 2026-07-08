@@ -249,6 +249,7 @@ export default function App() {
   const [dragActive2, setDragActive2] = useState(false);
   const [expandingNested, setExpandingNested] = useState<string | null>(null); // nested archive being compared
   const [expandedNested, setExpandedNested] = useState<Set<string>>(new Set()); // nested archives already drilled into
+  const [compareQuery, setCompareQuery] = useState(''); // filter for the changed-files list
 
   // decompile state
   const [srcJar, setSrcJar] = useState<File | null>(null);
@@ -418,6 +419,7 @@ export default function App() {
     setSelectedType(null);
     setExpandingNested(null);
     setExpandedNested(new Set());
+    setCompareQuery('');
     setDecompiled(null);
     setDecompiledMeta(null);
     setSrcJar(null);
@@ -854,6 +856,19 @@ export default function App() {
         },
       }
     : null;
+
+  // Filter the changed-files list by the Compare search box (matches full path).
+  const filterChanged = (arr: string[]) => {
+    const q = compareQuery.trim().toLowerCase();
+    return q ? arr.filter(p => p.toLowerCase().includes(q)) : arr;
+  };
+  const compareMatchCount = diffResult
+    ? filterChanged([
+        ...diffResult.modifiedClasses, ...diffResult.modified, ...diffResult.added,
+        ...diffResult.removed, ...diffResult.identicalSourceClasses,
+        ...diffResult.nestedChanges, ...diffResult.modifiedNested,
+      ]).length
+    : 0;
 
   const breadcrumb = (path: string) => {
     if (path.includes(' -> ')) {
@@ -1531,7 +1546,7 @@ export default function App() {
                     <span className="step-n">3</span>
                     <div>
                       <strong>Review the diff</strong>
-                      <p>Changed classes are decompiled and shown as a side-by-side Java source diff, so you see real code changes — not just bytecode.</p>
+                      <p>Changed classes are decompiled and shown as a side-by-side Java source diff, so you see real code changes — not just bytecode. Double-click a changed nested archive to diff its contents inline too.</p>
                     </div>
                   </li>
                 </ol>
@@ -1558,7 +1573,7 @@ export default function App() {
                     <span className="step-n">3</span>
                     <div>
                       <strong>Browse &amp; download</strong>
-                      <p>Explore sources in a package tree with syntax highlighting, then download everything as a <code>.zip</code>.</p>
+                      <p>Explore sources in a package tree with syntax highlighting, double-click nested <code>.jar</code>/<code>.war</code>/<code>.ear</code> to decompile them in place, then download everything as a <code>.zip</code>.</p>
                     </div>
                   </li>
                 </ol>
@@ -1567,9 +1582,9 @@ export default function App() {
               <div className="lc-block">
                 <h2 className="lc-h2">Features</h2>
                 <div className="feature-grid">
-                  <div className="feature-card"><h3>📦 Compare JAR files</h3><p>Class-by-class diff of two Java JARs with added / removed / modified detection.</p></div>
+                  <div className="feature-card"><h3>📦 Compare JAR / WAR / EAR</h3><p>Class-by-class diff of two Java archives with added / removed / modified detection.</p></div>
                   <div className="feature-card"><h3>🔍 Source-level diffs</h3><p>Changed <code>.class</code> files are decompiled so you read Java, not bytecode.</p></div>
-                  <div className="feature-card"><h3>🪆 Nested JARs</h3><p>Recurses into JARs packaged inside JARs, like Spring Boot fat JARs.</p></div>
+                  <div className="feature-card"><h3>🪆 Drill into nested archives</h3><p>Double-click a changed nested <code>.jar</code>/<code>.war</code>/<code>.ear</code> — in Compare or Decompile — to expand it inline, recursively.</p></div>
                   <div className="feature-card"><h3>🧩 Decompile to source</h3><p>Turn any JAR back into a browsable, downloadable Java source tree.</p></div>
                   <div className="feature-card"><h3>📊 JFR flame graphs</h3><p>Open a Java Flight Recorder <code>.jfr</code> file and explore CPU hot methods as an interactive flame graph.</p></div>
                   <div className="feature-card"><h3>🔒 100% private</h3><p>Your JARs never leave your machine — everything runs in the browser.</p></div>
@@ -1600,7 +1615,7 @@ export default function App() {
                   </details>
                   <details>
                     <summary>Can it compare Spring Boot or fat/uber JARs?</summary>
-                    <p>Yes. JAR Compare recurses into nested JARs (e.g. <code>BOOT-INF/lib</code>) and diffs their contents too.</p>
+                    <p>Yes. Changed nested archives (e.g. under <code>BOOT-INF/lib</code>) are listed on their own — double-click one to decompile both versions and see an inline source diff of its contents. It works recursively and for <code>.war</code>/<code>.ear</code> too.</p>
                   </details>
                   <details>
                     <summary>How does it show source diffs from compiled classes?</summary>
@@ -1639,15 +1654,31 @@ export default function App() {
 
           <div className="workspace">
             <aside className="file-panel">
-              <div className="file-panel-hd">Files changed</div>
+              <div className="file-search">
+                <input
+                  type="text"
+                  className="file-search-input"
+                  placeholder="Filter changed files…"
+                  value={compareQuery}
+                  onChange={e => setCompareQuery(e.target.value)}
+                  spellCheck={false}
+                  autoComplete="off"
+                />
+                {compareQuery && (
+                  <button className="file-search-clear" onClick={() => setCompareQuery('')} title="Clear filter">✕</button>
+                )}
+              </div>
               <div className="file-list">
-                {renderSection(diffResult.modifiedClasses,        'modifiedClasses',        'Modified Classes')}
-                {renderSection(diffResult.modified,               'modified',               'Modified'        )}
-                {renderSection(diffResult.added,                  'added',                  'Added'           )}
-                {renderSection(diffResult.removed,                'removed',                'Removed'         )}
-                {renderSection(diffResult.identicalSourceClasses, 'identicalSourceClasses', 'Identical Source')}
-                {renderSection(diffResult.nestedChanges,          'nestedChanges',          'Nested JAR'      )}
-                {renderNestedSection(diffResult.modifiedNested)}
+                {renderSection(filterChanged(diffResult.modifiedClasses),        'modifiedClasses',        'Modified Classes')}
+                {renderSection(filterChanged(diffResult.modified),               'modified',               'Modified'        )}
+                {renderSection(filterChanged(diffResult.added),                  'added',                  'Added'           )}
+                {renderSection(filterChanged(diffResult.removed),                'removed',                'Removed'         )}
+                {renderSection(filterChanged(diffResult.identicalSourceClasses), 'identicalSourceClasses', 'Identical Source')}
+                {renderSection(filterChanged(diffResult.nestedChanges),          'nestedChanges',          'Nested JAR'      )}
+                {renderNestedSection(filterChanged(diffResult.modifiedNested))}
+                {compareQuery && compareMatchCount === 0 && (
+                  <div className="search-empty">No changed files match “{compareQuery}”.</div>
+                )}
               </div>
               {diffResult.modifiedNested.length > 0 && (
                 <div className="panel-hints">
