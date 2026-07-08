@@ -448,6 +448,7 @@ body {
 .stat-removed        { background: var(--red-bg);    color: var(--red-text);    }
 .stat-identical      { background: var(--purple-bg); color: var(--purple-text); }
 .stat-nested         { background: var(--teal-bg);   color: var(--teal-text);   }
+.stat-archive        { background: var(--amber-bg);  color: var(--amber-text);  }
 
 /* ── Workspace ──────────────────────────────────────────────────────────── */
 .workspace {
@@ -520,6 +521,7 @@ body {
 .dot-removed                        { background: var(--red);    }
 .dot-identical                      { background: var(--purple); }
 .dot-nested                         { background: var(--teal);   }
+.dot-archive                        { background: var(--amber);  }
 
 .file-row {
   display: flex;
@@ -542,6 +544,19 @@ body {
   background: var(--accent-subtle);
   color: var(--accent);
 }
+
+/* Nested-archive rows: a "drill in to diff" affordance on the right. */
+.nested-row .nested-row-hint {
+  margin-left: auto;
+  padding-left: 0.4rem;
+  color: var(--text-muted);
+  opacity: 0;
+  font-size: 0.8rem;
+  transition: opacity 0.12s ease;
+}
+.nested-row:hover .nested-row-hint { opacity: 0.85; }
+.nested-row.busy { opacity: 0.7; cursor: progress; }
+.nested-row.busy .nested-row-hint { opacity: 1; }
 
 /* small square badge: M / A / R / ~ / N */
 .file-badge {
