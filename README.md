@@ -64,13 +64,110 @@ the Java engine, and the build/deploy pipeline.
 
 ---
 
+## Front-end architecture
+
+The deployed app is a single-page **React + TypeScript** app under `web-app/src`.
+It has three modes — **Compare**, **Decompile**, and **Profile** — that share one
+app shell, a per-mode slice of React state, and a small set of browser-side
+services. Compare and Decompile hand their archives to the in-browser JVM;
+Profile parses `.jfr` recordings **entirely in TypeScript** (no JVM).
+
+```mermaid
+flowchart TD
+    classDef ui    fill:#0d1117,stroke:#2f81f7,stroke-width:2px,color:#c9d1d9
+    classDef state fill:#161b22,stroke:#a371f7,stroke-width:2px,color:#c9d1d9
+    classDef svc   fill:#161b22,stroke:#d29922,stroke-width:2px,color:#c9d1d9
+    classDef view  fill:#161b22,stroke:#238636,stroke-width:2px,color:#c9d1d9
+    classDef ext   fill:#010409,stroke:#30363d,stroke-width:1px,color:#8b949e
+
+    User((User))
+
+    subgraph FE["Front-end · web-app/src"]
+      direction TB
+
+      subgraph Shell["App shell — App.tsx"]
+        Drop["Navbar · mode tabs · dropzones<br/>.jar / .war / .ear / .jfr · theme"]:::ui
+      end
+
+      subgraph Handlers["Mode handlers — App.tsx"]
+        HCompare["handleCompare<br/>+ compareNested (drill-in)"]:::ui
+        HDecompile["handleDecompile<br/>+ decompileNested (drill-in)"]:::ui
+        HProfile["handleProfile"]:::ui
+      end
+
+      subgraph St["React state + hooks"]
+        SCompare["diffResult · file filter<br/>expandedNested"]:::state
+        SDecompile["decompiled tree · nav history<br/>quick-open · outline"]:::state
+        SProfile["jfrResult"]:::state
+      end
+
+      subgraph Services["Browser services"]
+        Bridge["CheerpJ bridge<br/>runJava() + console-hook IPC"]:::svc
+        Zip["JSZip<br/>nested extract · .zip export"]:::svc
+        JFR["jfr.ts<br/>pure-TS JFR parser"]:::svc
+      end
+
+      subgraph Views["Result views"]
+        DiffView["ReactDiffViewer<br/>source-level diff"]:::view
+        Tree["Decompile file tree<br/>syntax-highlighted source"]:::view
+        Prof["Profiler.tsx + Flame.tsx<br/>hot methods + flame graph"]:::view
+      end
+    end
+
+    JVM[["CheerpJ JVM (WebAssembly)<br/>webcomparer.jar"]]:::ext
+
+    User -->|drop files| Drop
+    Drop --> HCompare & HDecompile & HProfile
+
+    HCompare --> SCompare
+    HDecompile --> SDecompile
+    HProfile --> SProfile
+
+    HCompare -->|jar1 + jar2| Bridge
+    HDecompile -->|jar| Bridge
+    HCompare -. extract nested .-> Zip
+    HProfile --> JFR
+
+    Bridge <-->|"cheerpjRunMain ⇄ JSON result"| JVM
+
+    SCompare --> DiffView
+    SDecompile --> Tree
+    SProfile --> Prof
+
+    Tree -->|Download .zip| Zip
+    DiffView --> User
+    Tree --> User
+    Prof --> User
+```
+
+**How to read it**
+
+- **App shell / handlers** (blue) — the navbar, dropzones and the per-mode entry
+  points in `App.tsx`. Drilling into a nested archive is `compareNested` /
+  `decompileNested`.
+- **State** (purple) — each mode keeps its own slice of React state (the diff and
+  its filter, the decompiled tree with IDE-style navigation, or the parsed JFR).
+- **Services** (amber) — the **CheerpJ bridge** (`runJava()` invokes a Java main
+  class and reads its JSON back via a `console.log` hook), **JSZip** (extract a
+  nested archive from the originals, and export the `.zip`), and **`jfr.ts`** (the
+  browser-only JFR binary parser).
+- **Views** (green) — how each mode renders its result.
+- **Profile never touches the JVM** — `.jfr` files are decoded in TypeScript and
+  drawn as a flame graph, so no `webcomparer.jar` round-trip is involved.
+
+---
+
 ## Project structure
 
 ```
 jar-compare/
 ├── web-app/                      # Front-end (React + Vite) — this is what's deployed
 │   ├── public/webcomparer.jar    # Prebuilt Java engine (served as a static asset)
-│   └── src/App.tsx               # Boots CheerpJ, feeds JARs, renders the diff
+│   └── src/
+│       ├── App.tsx               # App shell: modes, state, CheerpJ bridge, results
+│       ├── jfr.ts                # Pure-TypeScript JFR (.jfr) binary parser
+│       ├── Profiler.tsx          # Profile view: hot-methods table
+│       └── Flame.tsx             # Flame-graph renderer
 ├── jar-compare-java/             # Java engine source (built separately with Maven)
 │   └── src/main/java/com/jarcompare/
 │       ├── WebJarComparer.java   # Compare entry point (diffs two JARs)
