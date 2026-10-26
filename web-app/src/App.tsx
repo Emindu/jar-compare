@@ -17,6 +17,8 @@ import css from 'react-syntax-highlighter/dist/esm/languages/prism/css';
 import JSZip from 'jszip';
 import { parseJfr, type JfrResult } from './jfr';
 import Profiler from './Profiler';
+import MarkdownViewer from './Markdown';
+import sampleMd from './samples/ohlc-architecture.md?raw';
 import './index.css';
 
 SyntaxHighlighter.registerLanguage('java', java);
@@ -79,7 +81,7 @@ interface CheerpJGlobal {
 
 declare const window: Window & typeof globalThis & CheerpJGlobal;
 
-type Mode = 'compare' | 'decompile' | 'profile';
+type Mode = 'compare' | 'decompile' | 'profile' | 'markdown';
 
 type FileStatus = 'modifiedClasses' | 'modified' | 'added' | 'removed' | 'identicalSourceClasses' | 'nestedChanges' | 'modifiedNested';
 
@@ -269,6 +271,12 @@ export default function App() {
   const [dragActiveP, setDragActiveP] = useState(false);
   const [jfrResult, setJfrResult] = useState<JfrResult | null>(null);
 
+  // markdown viewer state
+  const [mdName, setMdName] = useState('');
+  const [mdDraft, setMdDraft] = useState('');
+  const [mdText, setMdText] = useState<string | null>(null);
+  const [dragActiveM, setDragActiveM] = useState(false);
+
   // IDE navigation: history, quick-open, outline, toast
   const [nav, setNav] = useState<{ stack: string[]; index: number }>({ stack: [], index: -1 });
   const navRef = useRef(nav);
@@ -427,6 +435,9 @@ export default function App() {
     setSourceQuery('');
     setJfrFile(null);
     setJfrResult(null);
+    setMdName('');
+    setMdDraft('');
+    setMdText(null);
     setProgressText('');
     navRef.current = { stack: [], index: -1 };
     setNav({ stack: [], index: -1 });
@@ -745,6 +756,25 @@ export default function App() {
       setIsProcessing(false);
       setProgressText('');
     }
+  };
+
+  const loadMdFile = async (f: File | null | undefined) => {
+    if (!f) return;
+    setMdName(f.name);
+    setMdDraft(await f.text());
+  };
+
+  const onMdDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setDragActiveM(false);
+    loadMdFile(e.dataTransfer.files?.[0]);
+  };
+
+  const openMarkdown = (text = mdDraft, name = mdName) => {
+    if (!text.trim()) return;
+    setMdName(name || 'Untitled.md');
+    setMdText(text);
   };
 
   const downloadZip = async () => {
@@ -1294,7 +1324,7 @@ export default function App() {
     });
   };
 
-  const hasResults = !!diffResult || !!decompiled || !!jfrResult;
+  const hasResults = !!diffResult || !!decompiled || !!jfrResult || mdText !== null;
 
   return (
     <div className={`app${hasResults ? ' has-results' : ''}`}>
@@ -1311,6 +1341,7 @@ export default function App() {
               <button className={`mode-tab${mode === 'compare' ? ' active' : ''}`} onClick={() => switchMode('compare')}>Compare</button>
               <button className={`mode-tab${mode === 'decompile' ? ' active' : ''}`} onClick={() => switchMode('decompile')}>Decompile</button>
               <button className={`mode-tab${mode === 'profile' ? ' active' : ''}`} onClick={() => switchMode('profile')}>Profile</button>
+              <button className={`mode-tab${mode === 'markdown' ? ' active' : ''}`} onClick={() => switchMode('markdown')}>Markdown</button>
             </div>
           )}
 
@@ -1331,6 +1362,12 @@ export default function App() {
             <div className="navbar-jars">
               <span className="jar-pill">{jfrFile.name}</span>
               <span className="jar-arrow">📊 profile</span>
+            </div>
+          )}
+          {mdText !== null && (
+            <div className="navbar-jars">
+              <span className="jar-pill">{mdName}</span>
+              <span className="jar-arrow">📝 markdown</span>
             </div>
           )}
         </div>
@@ -1500,6 +1537,54 @@ export default function App() {
                 <div className="progress-text">{progressText || 'Working…'}</div>
               </div>
             )}
+          </div>
+        </main>
+      )}
+
+      {/* ── Upload page: MARKDOWN ────────────────── */}
+      {mode === 'markdown' && mdText === null && (
+        <main className="upload-page">
+          <div className="upload-card">
+            <div className="upload-heading">
+              <h1 className="upload-title">Visualize a Markdown file</h1>
+              <p className="upload-sub">Open a <code>.md</code> file or paste Markdown to browse it by section, with Mermaid diagrams rendered inline — all in your browser</p>
+            </div>
+
+            <div className="dropzone-row">
+              <div
+                className={`dropzone dropzone--single${dragActiveM ? ' drag-active' : ''}${mdName ? ' has-file' : ''}`}
+                onDragEnter={e => handleDrag(e, setDragActiveM)}
+                onDragOver={e  => handleDrag(e, setDragActiveM)}
+                onDragLeave={e => handleDrag(e, setDragActiveM)}
+                onDrop={onMdDrop}
+              >
+                <label>
+                  <span className="dz-label">Markdown file</span>
+                  <span className={`dz-file${mdName ? ' dz-file--set' : ''}`}>
+                    {mdName || 'Drop .md or click to browse'}
+                  </span>
+                  {mdName && <span className="dz-meta">{(mdDraft.length / 1024).toFixed(1)} KB</span>}
+                  <input type="file" accept=".md,.markdown,.mdx,.txt,text/markdown" onChange={e => loadMdFile(e.target.files?.[0])} />
+                </label>
+              </div>
+            </div>
+
+            <textarea
+              className="md-paste"
+              placeholder="…or paste Markdown here"
+              value={mdDraft}
+              onChange={e => { setMdDraft(e.target.value); if (!e.target.value) setMdName(''); }}
+              spellCheck={false}
+            />
+
+            <div className="upload-actions">
+              <button className="btn btn-primary" disabled={!mdDraft.trim()} onClick={() => openMarkdown()}>
+                View document
+              </button>
+              <button className="btn btn-ghost" onClick={() => openMarkdown(sampleMd, 'ohlc-architecture.md')}>
+                Try a sample
+              </button>
+            </div>
           </div>
         </main>
       )}
@@ -1925,6 +2010,9 @@ export default function App() {
 
       {/* ── Results: PROFILE (JFR) ───────────────── */}
       {jfrResult && <Profiler result={jfrResult} />}
+
+      {/* ── Results: MARKDOWN ────────────────────── */}
+      {mdText !== null && <MarkdownViewer text={mdText} theme={theme} onChange={setMdText} />}
 
       {/* ── Quick Open (Ctrl/Cmd+P) ── */}
       {quickOpen && (
