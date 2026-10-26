@@ -24,7 +24,7 @@ function fmtSize(bytes: number): string {
 }
 
 export default function Intake({
-  command, slots, accept, action, busy, progress, onRun, onSwap,
+  command, slots, accept, action, busy, progress, onRun, onSwap, lockedBy, failure,
 }: {
   command: React.ReactNode;
   slots: IntakeSlot[];
@@ -34,6 +34,10 @@ export default function Intake({
   progress: string;
   onRun: () => void;
   onSwap?: () => void;
+  /** Another tool is running a job; this one has to wait. */
+  lockedBy?: string | null;
+  /** The last run failed with this message. */
+  failure?: string;
 }) {
   const [over, setOver] = useState<number | 'panel' | null>(null);
   const [error, setError] = useState('');
@@ -57,10 +61,13 @@ export default function Intake({
   const missing = slots.find((s) => !s.file);
   const total = slots.reduce((a, s) => a + (s.file?.size ?? 0), 0);
 
+  const shownError = error || failure || '';
   const status = busy
     ? progress || 'working…'
-    : error
-      ? error
+    : shownError
+      ? shownError
+      : lockedBy
+        ? `waiting: ${lockedBy} is running`
       : ready
         ? `ready · ${slots.length > 1 ? `${slots.length} files, ` : ''}${fmtSize(total)}`
         : `waiting for ${missing!.prefix}${slots.length > 1 ? ` (${missing!.role})` : ''}`;
@@ -137,10 +144,10 @@ export default function Intake({
       </ol>
 
       <footer className="intake-foot">
-        <span className={`intake-status${error && !busy ? ' is-error' : ''}${ready && !busy && !error ? ' is-ready' : ''}`} role="status" aria-live="polite">
+        <span className={`intake-status${shownError && !busy ? ' is-error' : ''}${ready && !busy && !shownError && !lockedBy ? ' is-ready' : ''}`} role="status" aria-live="polite">
           {status}
         </span>
-        <button className="intake-run" onClick={onRun} disabled={!ready || busy}>
+        <button className="intake-run" onClick={() => onRun()} disabled={!ready || busy || !!lockedBy}>
           {busy ? 'Running…' : action}
         </button>
         {busy && <span className="intake-progress" aria-hidden />}

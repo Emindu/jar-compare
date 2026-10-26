@@ -43,8 +43,17 @@ const withExt = (name: string) => {
   return /\.(md|markdown|mdx|txt)$/i.test(n) ? n : `${n}.md`;
 };
 
-export default function MarkdownWorkspace({ theme }: { theme: 'light' | 'dark' }) {
-  const [doc, setDoc] = useState<Doc>(() => loadDraft() ?? { name: SAMPLES[0].name, text: SAMPLES[0].text });
+export default function MarkdownWorkspace({
+  theme, incoming, onOpen,
+}: {
+  theme: 'light' | 'dark';
+  /** A document handed over from elsewhere (e.g. dropped on Home); remount to open another. */
+  incoming?: Doc | null;
+  /** Called when a file is opened, so it can be listed as recent. */
+  onOpen?: (name: string) => void;
+}) {
+  const [doc, setDoc] = useState<Doc>(() =>
+    incoming ? { name: incoming.name, text: incoming.text } : loadDraft() ?? { name: SAMPLES[0].name, text: SAMPLES[0].text });
   const [docKey, setDocKey] = useState(0); // bumps when a different document is opened
   const [nameDraft, setNameDraft] = useState<string | null>(null);
   const [saved, setSaved] = useState<'saved' | 'saving' | 'off'>('saved');
@@ -76,6 +85,7 @@ export default function MarkdownWorkspace({ theme }: { theme: 'light' | 'dark' }
   const openFile = async (f: File | null | undefined) => {
     if (!f) return;
     open({ name: f.name, text: await f.text() });
+    onOpen?.(f.name);
   };
 
   const commitName = () => {

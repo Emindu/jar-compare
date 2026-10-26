@@ -19,6 +19,11 @@ import { parseJfr, type JfrResult } from './jfr';
 import Profiler from './Profiler';
 import MarkdownWorkspace from './MarkdownWorkspace';
 import Intake from './Intake';
+import Home from './Home';
+import { TitleBar, ActivityBar, StatusBar, ThemeButton } from './Workbench';
+import { MOD, TOOLS, type Tool, type JvmState } from './shell';
+import { loadRecent, addRecent, clearRecent, type RecentItem } from './recent';
+import { Download, RotateCcw, ExternalLink } from 'lucide-react';
 import './index.css';
 
 SyntaxHighlighter.registerLanguage('java', java);
@@ -81,7 +86,18 @@ interface CheerpJGlobal {
 
 declare const window: Window & typeof globalThis & CheerpJGlobal;
 
-type Mode = 'compare' | 'decompile' | 'profile' | 'markdown';
+type Mode = Tool;
+
+// One shared CheerpJ initialization: callers that arrive while it is still
+// starting wait for the same promise instead of racing ahead of it.
+let jvmInit: Promise<void> | null = null;
+function startJvm(): Promise<void> {
+  if (!jvmInit) {
+    window.__cheerpjInitializing = true;
+    jvmInit = window.cheerpjInit().catch(e => { jvmInit = null; throw e; });
+  }
+  return jvmInit;
+}
 
 type FileStatus = 'modifiedClasses' | 'modified' | 'added' | 'removed' | 'identicalSourceClasses' | 'nestedChanges' | 'modifiedNested';
 
@@ -227,50 +243,25 @@ function mergeNestedDiff(prev: DiffResult, pfx: string, sub: DiffResult): DiffRe
   };
 }
 
-// How-to procedures shown on the start page; the active tab's comes first.
-const PROCEDURES: Record<'compare' | 'decompile' | 'profile', { title: string; steps: { key: string; text: React.ReactNode }[] }> = {
-  compare: {
-    title: 'How to compare two JAR files',
-    steps: [
-      { key: 'Load', text: <>Put the original build in <var>a/</var> and the new one in <var>b/</var>: drag them in, or click a row to choose a file.</> },
-      { key: 'Diff', text: <>Entries are hashed and matched by path. Archives nested inside, such as <code>BOOT-INF/lib</code> or <code>WEB-INF/lib</code>, are opened and compared too.</> },
-      { key: 'Read', text: <>Modified classes are decompiled and shown side by side, so the change reads as Java rather than bytecode.</> },
-    ],
-  },
-  decompile: {
-    title: 'How to decompile a JAR file',
-    steps: [
-      { key: 'Switch', text: <>Open the <em>Decompile</em> tab and load a single <code>.jar</code>, <code>.war</code> or <code>.ear</code>.</> },
-      { key: 'Extract', text: <>Every class goes through the CFR decompiler; resources are copied out unchanged.</> },
-      { key: 'Keep', text: <>Browse the package tree with syntax highlighting, then download the whole tree as a <code>.zip</code>.</> },
-    ],
-  },
-  profile: {
-    title: 'How to analyze a JFR recording',
-    steps: [
-      { key: 'Record', text: <>Start the JVM with <code>-XX:StartFlightRecording=duration=60s,filename=app.jfr,settings=profile</code>, or attach later with <code>jcmd &lt;pid&gt; JFR.start</code>.</> },
-      { key: 'Open', text: <>Load the <code>.jfr</code> file on the <em>Profile</em> tab. It is parsed in the page; nothing is sent anywhere.</> },
-      { key: 'Read', text: <>Sort hot methods by self or total samples, and click one to find it in the flame graph.</> },
-    ],
-  },
-};
-
-function procedureOrder(mode: Mode): ('compare' | 'decompile' | 'profile')[] {
-  const all = ['compare', 'decompile', 'profile'] as const;
-  const first = mode === 'decompile' || mode === 'profile' ? mode : 'compare';
-  return [first, ...all.filter((k) => k !== first)];
-}
-
 export default function App() {
-  const [mode, setMode] = useState<Mode>('compare');
+  const [mode, setMode] = useState<Mode>('home');
+  const [jvm, setJvm] = useState<JvmState>(() => (typeof window.cheerpjInit === 'undefined' ? 'unavailable' : 'loading'));
+  const [busyTool, setBusyTool] = useState<Tool | null>(null);
+  const [jobError, setJobError] = useState<{ tool: Tool; message: string } | null>(null);
+  const [recent, setRecent] = useState<RecentItem[]>(loadRecent);
+  const [mdIncoming, setMdIncoming] = useState<{ id: number; name: string; text: string } | null>(null);
+  const openPicker = useRef<HTMLInputElement>(null);
+  const remember = (kind: Exclude<Tool, 'home'>, label: string) => setRecent(addRecent(kind, label));
 
   // shared
   const [isProcessing, setIsProcessing] = useState(false);
   const [progressText, setProgressText] = useState('');
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
-    const saved = localStorage.getItem('theme');
-    if (saved === 'light' || saved === 'dark') return saved;
-    return 'light';
+    try {
+      const saved = localStorage.getItem('theme');
+      if (saved === 'light' || saved === 'dark') return saved;
+    } catch { /* storage unavailable */ }
+    return window.matchMedia?.('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
   });
 
   // compare state
@@ -323,7 +314,7 @@ export default function App() {
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
-    localStorage.setItem('theme', theme);
+    try { localStorage.setItem('theme', theme); } catch { /* storage unavailable */ }
   }, [theme]);
 
   const toggleTheme = () => setTheme(t => (t === 'dark' ? 'light' : 'dark'));
@@ -442,7 +433,7 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const resetAll = () => {
+  const resetCompare = () => {
     setDiffResult(null);
     setJar1File(null);
     setJar2File(null);
@@ -450,6 +441,9 @@ export default function App() {
     setSelectedType(null);
     setExpandingNested(null);
     setExpandedNested(new Set());
+  };
+
+  const resetDecompile = () => {
     setDecompiled(null);
     setDecompiledMeta(null);
     setSrcJar(null);
@@ -457,40 +451,62 @@ export default function App() {
     setCollapsedDirs(new Set());
     setExpandingArchive(null);
     setSourceQuery('');
-    setJfrFile(null);
-    setJfrResult(null);
-    setProgressText('');
     navRef.current = { stack: [], index: -1 };
     setNav({ stack: [], index: -1 });
     setQuickOpen(false);
     setOutlineOpen(false);
-    setToast(null);
   };
 
+  const resetProfile = () => {
+    setJfrFile(null);
+    setJfrResult(null);
+  };
+
+  // Tools keep their state when you switch between them; each has its own "New".
   const switchMode = (m: Mode) => {
     if (m === mode) return;
     setMode(m);
-    resetAll();
+    setToast(null);
   };
 
-  // Back to the landing screen (clears results and returns to the default mode).
-  const goHome = () => {
-    resetAll();
-    setMode('compare');
+  /** Send files to the right tool by extension; returns an error message if none apply. */
+  const routeFiles = (files: File[]): string | null => {
+    const is = (f: File, re: RegExp) => re.test(f.name.toLowerCase());
+    const archives = files.filter(f => is(f, /\.(jar|war|ear)$/));
+    const jfr = files.find(f => is(f, /\.jfr$/));
+    const md = files.find(f => is(f, /\.(md|markdown)$/));
+    setJobError(null);
+    if (archives.length >= 2) {
+      setJar1File(archives[0]);
+      setJar2File(archives[1]);
+      setMode('compare');
+      handleCompare(archives[0], archives[1]);
+    } else if (archives.length === 1) {
+      setSrcJar(archives[0]);
+      setMode('decompile');
+      handleDecompile(archives[0]);
+    } else if (jfr) {
+      setJfrFile(jfr);
+      setMode('profile');
+      handleProfile(jfr);
+    } else if (md) {
+      md.text().then(text => {
+        setMdIncoming({ id: Date.now(), name: md.name, text });
+        remember('markdown', md.name);
+        setMode('markdown');
+      });
+    } else {
+      return `${files.length === 1 ? files[0].name : `None of these ${files.length} files`} can't be opened here. Use .jar, .war, .ear, .jfr or .md.`;
+    }
+    return null;
   };
 
+  // Start the JVM in the background so it is warm by the time a file arrives.
   useEffect(() => {
-    const init = async () => {
-      try {
-        if (typeof window.cheerpjInit !== 'undefined' && !window.__cheerpjInitializing) {
-          window.__cheerpjInitializing = true;
-          await window.cheerpjInit();
-        }
-      } catch (e) {
-        console.error('Failed to initialize CheerpJ', e);
-      }
-    };
-    init();
+    if (typeof window.cheerpjInit === 'undefined') return;
+    startJvm()
+      .then(() => setJvm('ready'))
+      .catch(e => { console.error('Failed to initialize CheerpJ', e); setJvm('error'); });
   }, []);
 
   // Run a Java main class and capture the JSON it prints between markers.
@@ -516,19 +532,28 @@ export default function App() {
     });
 
   const ensureCheerpJ = async () => {
-    if (typeof window.cheerpjInit !== 'undefined' && !window.__cheerpjInitializing) {
-      window.__cheerpjInitializing = true;
-      await window.cheerpjInit();
+    if (typeof window.cheerpjInit === 'undefined') {
+      setJvm('unavailable');
+      throw new Error('the in-browser Java runtime did not load. It is downloaded once from cjrtnc.leaningtech.com; check your connection or content blocker, then reload');
+    }
+    try {
+      await startJvm(); // waits for an initialization already in progress
+      setJvm('ready');
+    } catch (e) {
+      setJvm('error');
+      throw e;
     }
   };
 
-  const handleCompare = async () => {
-    if (!jar1File || !jar2File) return;
+  const handleCompare = async (jarA: File | null = jar1File, jarB: File | null = jar2File) => {
+    if (!jarA || !jarB) return;
     setIsProcessing(true);
+    setBusyTool('compare');
+    setJobError(null);
     setProgressText('Preparing environments...');
     try {
-      const b1 = await jar1File.arrayBuffer();
-      const b2 = await jar2File.arrayBuffer();
+      const b1 = await jarA.arrayBuffer();
+      const b2 = await jarB.arrayBuffer();
       await ensureCheerpJ();
       window.cheerpOSAddStringFile('/str/jar1.jar', new Uint8Array(b1));
       window.cheerpOSAddStringFile('/str/jar2.jar', new Uint8Array(b2));
@@ -566,11 +591,13 @@ export default function App() {
       setDiffResult(parsed);
       setSelectedFile(null);
       setSelectedType(null);
+      remember('compare', `${jarA.name} → ${jarB.name}`);
     } catch (e) {
       console.error(e);
-      alert('Error processing jars: ' + e);
+      setJobError({ tool: 'compare', message: `could not compare these archives: ${e instanceof Error ? e.message : e}` });
     } finally {
       setIsProcessing(false);
+      setBusyTool(null);
       setProgressText('');
     }
   };
@@ -648,12 +675,14 @@ export default function App() {
     }
   };
 
-  const handleDecompile = async () => {
-    if (!srcJar) return;
+  const handleDecompile = async (jar: File | null = srcJar) => {
+    if (!jar) return;
     setIsProcessing(true);
+    setBusyTool('decompile');
+    setJobError(null);
     setProgressText('Preparing environment...');
     try {
-      const buf = await srcJar.arrayBuffer();
+      const buf = await jar.arrayBuffer();
       await ensureCheerpJ();
       window.cheerpOSAddStringFile('/str/input.jar', new Uint8Array(buf));
 
@@ -668,11 +697,13 @@ export default function App() {
       // auto-select first .java source for instant feedback
       const firstJava = Object.keys(files).sort().find(p => p.endsWith('.java'));
       openFile(firstJava || Object.keys(files).sort()[0] || null);
+      remember('decompile', jar.name);
     } catch (e) {
       console.error(e);
-      alert('Error decompiling jar: ' + e);
+      setJobError({ tool: 'decompile', message: `could not decompile this archive: ${e instanceof Error ? e.message : e}` });
     } finally {
       setIsProcessing(false);
+      setBusyTool(null);
       setProgressText('');
     }
   };
@@ -737,20 +768,24 @@ export default function App() {
     }
   };
 
-  const handleProfile = async () => {
-    if (!jfrFile) return;
+  const handleProfile = async (recording: File | null = jfrFile) => {
+    if (!recording) return;
     setIsProcessing(true);
+    setBusyTool('profile');
+    setJobError(null);
     setProgressText('Parsing recording…');
     try {
       // JFR parsing is pure client-side data work — no CheerpJ/JVM needed.
-      const buf = await jfrFile.arrayBuffer();
+      const buf = await recording.arrayBuffer();
       const result = parseJfr(buf);
       setJfrResult(result);
+      remember('profile', recording.name);
     } catch (e) {
       console.error(e);
-      alert('Could not parse this .jfr file: ' + e);
+      setJobError({ tool: 'profile', message: `could not read this recording: ${e instanceof Error ? e.message : e}` });
     } finally {
       setIsProcessing(false);
+      setBusyTool(null);
       setProgressText('');
     }
   };
@@ -1303,223 +1338,149 @@ export default function App() {
   };
 
   // The Markdown tab is a workspace from the start (no upload step).
-  const hasResults = !!diffResult || !!decompiled || !!jfrResult || mode === 'markdown';
+  // Shortcuts that work everywhere: open a file, switch tool with 1–4.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      const typing = !!t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || !!t.closest('.cm-editor'));
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'o') {
+        e.preventDefault();
+        openPicker.current?.click();
+        return;
+      }
+      if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
+      const tool = TOOLS.find(x => x.key === e.key);
+      if (tool) { e.preventDefault(); setMode(tool.id); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  const shortcuts = [
+    { label: 'Open file', keys: [`${MOD}O`] },
+    { label: 'Switch tool', keys: ['1 – 4'] },
+  ];
+
+  const toolName = (t: Tool) => (t === 'home' ? 'home' : t);
+  const crumbs: string[] = [toolName(mode)];
+  if (mode === 'compare' && diffResult && jar1File && jar2File) crumbs.push(`${jar1File.name} → ${jar2File.name}`);
+  if (mode === 'decompile' && decompiled && srcJar) crumbs.push(srcJar.name);
+  if (mode === 'profile' && jfrResult && jfrFile) crumbs.push(jfrFile.name);
+
+  const titleActions = (
+    <>
+      {mode === 'home' && (
+        <a className="wb-text-btn" href="https://github.com/Emindu/jar-compare" target="_blank" rel="noopener noreferrer">
+          GitHub <ExternalLink size={13} />
+        </a>
+      )}
+      {mode === 'compare' && diffResult && (
+        <button className="wb-btn wb-btn-primary" onClick={resetCompare}><RotateCcw size={14} /> New comparison</button>
+      )}
+      {mode === 'decompile' && decompiled && (
+        <>
+          <button className="wb-btn" onClick={resetDecompile}><RotateCcw size={14} /> New file</button>
+          <button className="wb-btn wb-btn-primary" onClick={downloadZip}><Download size={14} /> sources.zip</button>
+        </>
+      )}
+      {mode === 'profile' && jfrResult && (
+        <button className="wb-btn wb-btn-primary" onClick={resetProfile}><RotateCcw size={14} /> Open recording</button>
+      )}
+      <ThemeButton theme={theme} onToggle={toggleTheme} />
+    </>
+  );
+
+  /** The empty state of a tool: what it does and the input panel. */
+  const toolStart = (tool: 'compare' | 'decompile' | 'profile', title: string, lede: React.ReactNode, intake: React.ReactNode) => (
+    <div className="wb-scroll">
+      <div className="tool-start">
+        <p className="home-path">~/{tool}</p>
+        <h1 className="tool-start-title">{title}</h1>
+        <p className="tool-start-lede">{lede}</p>
+        {intake}
+      </div>
+    </div>
+  );
+  const busy = (tool: Tool) => isProcessing && busyTool === tool;
+  const lockedBy = (tool: Tool) => (isProcessing && busyTool !== tool ? busyTool : null);
+  const failure = (tool: Tool) => (jobError?.tool === tool ? jobError.message : '');
 
   return (
-    <div className={`app${hasResults ? ' has-results' : ''}`}>
-      {/* ── Navbar ───────────────────────────────── */}
-      <nav className="navbar">
-        <div className="navbar-left">
-          <button className="navbar-brand" onClick={goHome} title="Back to home">
-            <span className="navbar-mark" aria-hidden />
-            <span className="navbar-title">jar-compare</span>
-          </button>
+    <div className="wb">
+      <TitleBar crumbs={crumbs} onHome={() => switchMode('home')} actions={titleActions} />
+      <ActivityBar tool={mode} onSelect={switchMode} busy={busyTool ? { [busyTool]: isProcessing } : undefined} />
 
-          {(!hasResults || mode === 'markdown') && (
-            <div className="mode-tabs">
-              <button className={`mode-tab${mode === 'compare' ? ' active' : ''}`} onClick={() => switchMode('compare')}>Compare</button>
-              <button className={`mode-tab${mode === 'decompile' ? ' active' : ''}`} onClick={() => switchMode('decompile')}>Decompile</button>
-              <button className={`mode-tab${mode === 'profile' ? ' active' : ''}`} onClick={() => switchMode('profile')}>Profile</button>
-              <button className={`mode-tab${mode === 'markdown' ? ' active' : ''}`} onClick={() => switchMode('markdown')}>Markdown</button>
-            </div>
-          )}
-
-          {diffResult && jar1File && jar2File && (
-            <div className="navbar-jars">
-              <span className="jar-pill">{jar1File.name}</span>
-              <span className="jar-arrow">→</span>
-              <span className="jar-pill">{jar2File.name}</span>
-            </div>
-          )}
-          {decompiled && srcJar && (
-            <div className="navbar-jars">
-              <span className="jar-pill">{srcJar.name}</span>
-              <span className="jar-arrow">⇣ sources</span>
-            </div>
-          )}
-          {jfrResult && jfrFile && (
-            <div className="navbar-jars">
-              <span className="jar-pill">{jfrFile.name}</span>
-              <span className="jar-arrow">profile</span>
-            </div>
-          )}
-        </div>
-
-        <div className="navbar-right">
-          {decompiled && (
-            <button className="btn btn-primary btn-sm" onClick={downloadZip}>⇣ Download .zip</button>
-          )}
-          {hasResults && mode !== 'markdown' && (
-            <button className="btn btn-ghost" onClick={resetAll}>
-              {mode === 'compare' ? 'New comparison' : 'New file'}
-            </button>
-          )}
-          {hasResults && mode !== 'markdown' && (
-            <button className="btn btn-icon" onClick={goHome} title="Back to the start page">Home</button>
-          )}
-          <button className="btn btn-icon navbar-theme" onClick={toggleTheme} title="Toggle theme" aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}>
-            {theme === 'dark' ? 'Light' : 'Dark'}
-          </button>
-        </div>
-      </nav>
-
-      {/* ── Home: intake + datasheet ─────────────── */}
-      {!hasResults && (
-        <div className="home">
-          <main className="home-hero">
-            <div className="hero-copy">
-              <p className="hero-meta">
-                {mode === 'profile' ? '.jfr' : 'jar · war · ear'}
-                <span>runs in this tab</span>
-                <span>nothing is uploaded</span>
-              </p>
-              {mode === 'compare' && (
-                <>
-                  <h1 className="hero-title"><span>Diff two</span> <span>Java builds.</span></h1>
-                  <p className="hero-lede">Drop the old and the new archive. Every entry is hashed and matched, changed classes are decompiled, and you read the difference as Java source.</p>
-                </>
-              )}
-              {mode === 'decompile' && (
-                <>
-                  <h1 className="hero-title"><span>Read the source</span> <span>of any JAR.</span></h1>
-                  <p className="hero-lede">CFR turns the bytecode back into Java and every resource is extracted alongside it. Browse the package tree, then take it all as a <code>.zip</code>.</p>
-                </>
-              )}
-              {mode === 'profile' && (
-                <>
-                  <h1 className="hero-title"><span>See where the</span> <span>JVM spends its time.</span></h1>
-                  <p className="hero-lede">Open a Flight Recorder file. CPU samples become a hot-method table and a flame graph you can search.</p>
-                </>
-              )}
-            </div>
-
-            <div className="hero-tool">
-              {mode === 'compare' && (
-                <Intake
-                  command={<>diff <var>a/</var>original <var>b/</var>new</>}
-                  slots={[
-                    { marker: '−', prefix: 'a/', role: 'original build', tone: 'old', file: jar1File, setFile: setJar1File },
-                    { marker: '+', prefix: 'b/', role: 'new build', tone: 'new', file: jar2File, setFile: setJar2File },
-                  ]}
-                  accept={['.jar', '.war', '.ear']}
-                  action="Compare"
-                  busy={isProcessing}
-                  progress={progressText}
-                  onRun={handleCompare}
-                  onSwap={() => { setJar1File(jar2File); setJar2File(jar1File); }}
-                />
-              )}
-              {mode === 'decompile' && (
-                <Intake
-                  command={<>cfr <var>archive</var> → src/</>}
-                  slots={[{ marker: '›', prefix: 'in/', role: 'archive to decompile', tone: 'neutral', file: srcJar, setFile: setSrcJar }]}
-                  accept={['.jar', '.war', '.ear']}
-                  action="Decompile"
-                  busy={isProcessing}
-                  progress={progressText}
-                  onRun={handleDecompile}
-                />
-              )}
-              {mode === 'profile' && (
-                <Intake
-                  command={<>jfr <var>recording</var> → flame graph</>}
-                  slots={[{ marker: '›', prefix: 'in/', role: 'flight recording', tone: 'neutral', file: jfrFile, setFile: setJfrFile }]}
-                  accept={['.jfr']}
-                  action="Analyze"
-                  busy={isProcessing}
-                  progress={progressText}
-                  onRun={handleProfile}
-                />
-              )}
-              {mode === 'compare' && (
-                <p className="hero-tip">Drop both archives on the panel at once and they fill <var>a/</var> and <var>b/</var> in order.</p>
-              )}
-            </div>
-          </main>
-
-          <section className="sheet" aria-label="About JAR Compare">
-            {procedureOrder(mode).map((key, i) => {
-              const proc = PROCEDURES[key];
-              return (
-                <div className="sheet-row" key={key}>
-                  <div className="sheet-label"><span>§0{i + 1}</span>Procedure</div>
-                  <div className="sheet-body">
-                    <h2>{proc.title}</h2>
-                    <ol className="proc">
-                      {proc.steps.map((step) => <li key={step.key}><b>{step.key}.</b> {step.text}</li>)}
-                    </ol>
-                  </div>
-                </div>
-              );
-            })}
-
-            <div className="sheet-row">
-              <div className="sheet-label"><span>§04</span>Coverage</div>
-              <div className="sheet-body">
-                <h2>What it handles</h2>
-                <dl className="spec">
-                  <div><dt>Archives</dt><dd>JAR, WAR and EAR, compared entry by entry: added, removed, modified, identical.</dd></div>
-                  <div><dt>Nested JARs</dt><dd>Fat and Spring Boot JARs are opened recursively, so a changed library inside is a diff too.</dd></div>
-                  <div><dt>Source diffs</dt><dd>Changed <code>.class</code> files are decompiled before diffing; you never read raw bytecode.</dd></div>
-                  <div><dt>Decompiled trees</dt><dd>A whole archive back to browsable, downloadable Java.</dd></div>
-                  <div><dt>JFR recordings</dt><dd>Hot methods by self and total time, and a searchable flame graph.</dd></div>
-                  <div><dt>Markdown</dt><dd>An editor with outline, live preview and interactive Mermaid diagrams, for the notes that go with a release.</dd></div>
-                </dl>
-              </div>
-            </div>
-
-            <div className="sheet-row sheet-row--statement">
-              <div className="sheet-label"><span>§05</span>Privacy</div>
-              <div className="sheet-body">
-                <h2 className="statement">Your bytecode never leaves this tab.</h2>
-                <p>
-                  A real Java virtual machine, compiled to WebAssembly by CheerpJ, runs inside the page. Comparison
-                  and decompilation happen on your machine with the CFR decompiler, so proprietary code is never
-                  uploaded anywhere.
-                </p>
-              </div>
-            </div>
-
-            <div className="sheet-row">
-              <div className="sheet-label"><span>§06</span>Questions</div>
-              <div className="sheet-body">
-                <h2>Frequently asked questions</h2>
-                <div className="faq">
-                  <details>
-                    <summary>Is JAR Compare free?</summary>
-                    <p>Yes. There is no account, no sign-up and no limit.</p>
-                  </details>
-                  <details>
-                    <summary>Are my JAR files uploaded anywhere?</summary>
-                    <p>No. Everything runs in your browser through WebAssembly; the files never leave your device.</p>
-                  </details>
-                  <details>
-                    <summary>Can it compare Spring Boot or fat/uber JARs?</summary>
-                    <p>Yes. Nested JARs such as <code>BOOT-INF/lib</code> are opened and their contents compared as well.</p>
-                  </details>
-                  <details>
-                    <summary>How does it show source diffs from compiled classes?</summary>
-                    <p>Changed <code>.class</code> files are decompiled to Java with CFR, then shown as a side-by-side diff.</p>
-                  </details>
-                  <details>
-                    <summary>Can I download the decompiled source?</summary>
-                    <p>Yes. In Decompile mode, browse the package tree and download everything as a <code>.zip</code>.</p>
-                  </details>
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <footer className="colophon">
-            <span>jar-compare</span>
-            <span>Compare and decompile Java archives in the browser. Free, nothing uploaded.</span>
-            <a href="https://github.com/Emindu/jar-compare" target="_blank" rel="noopener noreferrer">Source on GitHub</a>
-          </footer>
+      <main className="wb-main">
+      {mode === 'home' && (
+        <div className="wb-scroll">
+          <Home
+            onFiles={routeFiles}
+            onTool={switchMode}
+            recent={recent}
+            onClearRecent={() => { clearRecent(); setRecent([]); }}
+            jvm={jvm}
+            shortcuts={shortcuts}
+          />
         </div>
       )}
 
+      {mode === 'compare' && !diffResult && toolStart(
+        'compare',
+        'Compare two builds',
+        'Drop the old and the new archive. Every entry is hashed and matched, changed classes are decompiled, and you read the difference as Java source.',
+        <Intake
+          command={<>diff <var>a/</var>original <var>b/</var>new</>}
+          slots={[
+            { marker: '−', prefix: 'a/', role: 'original build', tone: 'old', file: jar1File, setFile: setJar1File },
+            { marker: '+', prefix: 'b/', role: 'new build', tone: 'new', file: jar2File, setFile: setJar2File },
+          ]}
+          accept={['.jar', '.war', '.ear']}
+          action="Compare"
+          busy={busy('compare')}
+          lockedBy={lockedBy('compare')}
+          failure={failure('compare')}
+          progress={progressText}
+          onRun={() => handleCompare()}
+          onSwap={() => { setJar1File(jar2File); setJar2File(jar1File); }}
+        />,
+      )}
+
+      {mode === 'decompile' && !decompiled && toolStart(
+        'decompile',
+        'Decompile an archive',
+        <>CFR turns the bytecode back into Java and every resource is extracted alongside it. Browse the package tree, then download it all as <code>sources.zip</code>.</>,
+        <Intake
+          command={<>cfr <var>archive</var> → src/</>}
+          slots={[{ marker: '›', prefix: 'in/', role: 'archive to decompile', tone: 'neutral', file: srcJar, setFile: setSrcJar }]}
+          accept={['.jar', '.war', '.ear']}
+          action="Decompile"
+          busy={busy('decompile')}
+          lockedBy={lockedBy('decompile')}
+          failure={failure('decompile')}
+          progress={progressText}
+          onRun={() => handleDecompile()}
+        />,
+      )}
+
+      {mode === 'profile' && !jfrResult && toolStart(
+        'profile',
+        'Profile a flight recording',
+        <>Open a <code>.jfr</code> file. CPU samples become a hot-method table and a searchable flame graph. Record one with <code>-XX:StartFlightRecording=duration=60s,filename=app.jfr,settings=profile</code>.</>,
+        <Intake
+          command={<>jfr <var>recording</var> → flame graph</>}
+          slots={[{ marker: '›', prefix: 'in/', role: 'flight recording', tone: 'neutral', file: jfrFile, setFile: setJfrFile }]}
+          accept={['.jfr']}
+          action="Analyze"
+          busy={busy('profile')}
+          lockedBy={lockedBy('profile')}
+          failure={failure('profile')}
+          progress={progressText}
+          onRun={() => handleProfile()}
+        />,
+      )}
+
       {/* ── Results: COMPARE ─────────────────────── */}
-      {diffResult && stats && (
+      {mode === 'compare' && diffResult && stats && (
         <>
           <div className="stats-bar">
             <span className="stats-total">{stats.total} files changed</span>
@@ -1614,7 +1575,7 @@ export default function App() {
       )}
 
       {/* ── Results: DECOMPILE ───────────────────── */}
-      {decompiled && (
+      {mode === 'decompile' && decompiled && (
         <>
           <div className="stats-bar">
             <span className="stats-total">{decompiledPaths.length} files extracted</span>
@@ -1819,10 +1780,41 @@ export default function App() {
       )}
 
       {/* ── Results: PROFILE (JFR) ───────────────── */}
-      {jfrResult && <Profiler result={jfrResult} />}
+      {mode === 'profile' && jfrResult && <Profiler result={jfrResult} />}
 
       {/* ── Results: MARKDOWN ────────────────────── */}
-      {mode === 'markdown' && <MarkdownWorkspace theme={theme} />}
+      {mode === 'markdown' && (
+        <MarkdownWorkspace
+          key={mdIncoming?.id ?? 'draft'}
+          theme={theme}
+          incoming={mdIncoming}
+          onOpen={(name) => remember('markdown', name)}
+        />
+      )}
+      </main>
+
+      <StatusBar
+        jvm={jvm}
+        left={<>
+          <span>CheerpJ 4.3 · WebAssembly</span>
+          <span>local only · 0 B uploaded</span>
+          {isProcessing && progressText && <span className="wb-status-progress">{progressText}</span>}
+        </>}
+        right={<span>{theme}</span>}
+      />
+
+      <input
+        ref={openPicker}
+        type="file"
+        multiple
+        accept=".jar,.war,.ear,.jfr,.md,.markdown"
+        hidden
+        onChange={e => {
+          const err = routeFiles([...(e.target.files ?? [])]);
+          if (err) { setMode('home'); showToast(err); }
+          e.target.value = '';
+        }}
+      />
 
       {/* ── Quick Open (Ctrl/Cmd+P) ── */}
       {quickOpen && (
