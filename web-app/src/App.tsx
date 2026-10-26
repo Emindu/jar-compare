@@ -18,13 +18,14 @@ import { parseJfr, type JfrResult } from './jfr';
 import Profiler, { type ProfileStatus } from './Profiler';
 import MarkdownWorkspace, { type MdActions, type MdStatus } from './MarkdownWorkspace';
 import Intake from './Intake';
-import CompareView, { type CompareStatus } from './CompareView';
-import { type DiffResult } from './diffModel';
+import CompareView, { type CompareCommands, type CompareStatus } from './CompareView';
+import { allEntries, CHANGE_META, CHANGE_OF, type DiffResult } from './diffModel';
+import CommandPalette, { type PaletteItem } from './CommandPalette';
 import { kindOf, letterFor, packageOf, parseOutline, parseManifest, splitArchive, type SourceKind } from './decompileModel';
 import { ArrowLeft, ArrowRight, GitCompare, FileDown, ClipboardCopy } from 'lucide-react';
 import Home from './Home';
 import { TitleBar, ActivityBar, StatusBar, ThemeButton } from './Workbench';
-import { MOD, TOOLS, type Tool, type JvmState } from './shell';
+import { IS_MAC, MOD, TOOLS, type Tool, type JvmState } from './shell';
 import { loadRecent, addRecent, clearRecent, type RecentItem } from './recent';
 import { Download, RotateCcw, ExternalLink, Search, X } from 'lucide-react';
 import './index.css';
@@ -142,24 +143,6 @@ function langForPath(p: string): string {
 
 // Extract an outline (classes / methods / fields) from decompiled Java source.
 // Heuristic: works on CFR's 4-space-indented output.
-// Lightweight fuzzy subsequence scorer for Quick Open. Returns null if the
-// query isn't a subsequence of the target; higher score = better match.
-function fuzzyScore(query: string, target: string): number | null {
-  const q = query.toLowerCase();
-  const t = target.toLowerCase();
-  let qi = 0, score = 0, streak = 0, last = -2;
-  for (let i = 0; i < t.length && qi < q.length; i++) {
-    if (t[i] === q[qi]) {
-      streak = i === last + 1 ? streak + 1 : 0;
-      score += 1 + streak;
-      if (i === 0 || /[^A-Za-z0-9]/.test(t[i - 1])) score += 2; // word-boundary bonus
-      last = i;
-      qi++;
-    }
-  }
-  return qi === q.length ? score : null;
-}
-
 // Merge a nested archive's sub-comparison into the parent diff. Every sub-path
 // is prefixed with `pfx` (e.g. "BOOT-INF/lib/foo.jar -> "); modified classes are
 // split into real source changes vs. identical-decompiled-source, matching the
@@ -254,9 +237,8 @@ export default function App() {
   // IDE navigation: history, quick-open, outline, toast
   const [nav, setNav] = useState<{ stack: string[]; index: number }>({ stack: [], index: -1 });
   const navRef = useRef(nav);
-  const [quickOpen, setQuickOpen] = useState(false);
-  const [quickQuery, setQuickQuery] = useState('');
-  const [quickIndex, setQuickIndex] = useState(0);
+  const [palette, setPalette] = useState<string | null>(null); // open with this query
+  const compareCmds = useRef<CompareCommands | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
   const navHoverElRef = useRef<HTMLElement | null>(null);
@@ -365,14 +347,9 @@ export default function App() {
     }
   };
 
-  // Global keyboard shortcuts: Quick Open, Back/Forward, Escape.
+  // Decompile shortcuts: Back/Forward.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'p' || e.key === 'P')) {
-        if (decompiled) { e.preventDefault(); setQuickOpen(o => !o); setQuickQuery(''); setQuickIndex(0); }
-        return;
-      }
-      if (e.key === 'Escape') { setQuickOpen(false); return; }
       if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); navBack(); return; }
       if (e.altKey && e.key === 'ArrowRight') { e.preventDefault(); navForward(); return; }
     };
@@ -419,7 +396,6 @@ export default function App() {
     setSourceQuery('');
     navRef.current = { stack: [], index: -1 };
     setNav({ stack: [], index: -1 });
-    setQuickOpen(false);
   };
 
   /** From Profile: open a class's decompiled source at a line, if it has been decompiled. */
@@ -791,6 +767,16 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
+  // Cmd/Ctrl+Shift+S downloads the decompiled sources.
+  useEffect(() => {
+    if (mode !== 'decompile' || !decompiled) return;
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.code === 'KeyS') { e.preventDefault(); downloadZip(); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
   // ── Single decompiled-file actions ──────────────────────────────────────
   const mimeForPath = (p: string): string => {
     const ext = p.split('.').pop()?.toLowerCase();
@@ -1017,38 +1003,6 @@ export default function App() {
     } else if (t.classList.contains('function') && resolveMethod(text)) {
       t.classList.add('nav-link');
       navHoverElRef.current = t;
-    }
-  };
-
-  // Quick Open (Ctrl/Cmd+P) fuzzy results over all decompiled files.
-  const quickResults = useMemo(() => {
-    if (!decompiled) return [] as { path: string }[];
-    const paths = Object.keys(decompiled);
-    const q = quickQuery.trim();
-    if (!q) {
-      return paths.filter(p => p.endsWith('.java')).sort().slice(0, 60).map(path => ({ path }));
-    }
-    const scored: { path: string; score: number }[] = [];
-    for (const p of paths) {
-      const name = p.split('/').pop() || p;
-      const sName = fuzzyScore(q, name);
-      const sPath = fuzzyScore(q, p);
-      const score = Math.max(sName != null ? sName + 5 : -1, sPath != null ? sPath : -1);
-      if (score >= 0) scored.push({ path: p, score });
-    }
-    scored.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
-    return scored.slice(0, 60);
-  }, [quickQuery, decompiled]);
-
-  const onQuickKey = (e: React.KeyboardEvent) => {
-    if (e.key === 'ArrowDown') { e.preventDefault(); setQuickIndex(i => Math.min(i + 1, quickResults.length - 1)); }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); setQuickIndex(i => Math.max(i - 1, 0)); }
-    else if (e.key === 'Enter') {
-      e.preventDefault();
-      const r = quickResults[Math.min(quickIndex, quickResults.length - 1)];
-      if (r) { openFile(r.path); setQuickOpen(false); }
-    } else if (e.key === 'Escape') {
-      setQuickOpen(false);
     }
   };
 
@@ -1322,6 +1276,17 @@ export default function App() {
         openPicker.current?.click();
         return;
       }
+      // Cmd/Ctrl+K (or P) opens the palette, unless the editor used it (Ctrl+K inserts a link there).
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && /^[kp]$/i.test(e.key) && !e.defaultPrevented) {
+        e.preventDefault();
+        setPalette(p => (p === null ? '' : null));
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && e.code === 'KeyL') {
+        e.preventDefault();
+        setTheme(t => (t === 'dark' ? 'light' : 'dark'));
+        return;
+      }
       if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
       const tool = TOOLS.find(x => x.key === e.key);
       if (tool) { e.preventDefault(); setMode(tool.id); }
@@ -1345,9 +1310,101 @@ export default function App() {
   }, [mode, decompiled]);
 
   const shortcuts = [
+    { label: 'Command palette', keys: [`${MOD}K`] },
     { label: 'Open file', keys: [`${MOD}O`] },
     { label: 'Switch tool', keys: ['1 – 4'] },
+    { label: 'Filter files', keys: ['/'] },
+    { label: 'Next / previous file', keys: ['j', 'k'] },
+    { label: 'Next / previous change', keys: ['n', 'p'] },
   ];
+
+  // ── Command palette ──
+  const SHIFT_MOD = IS_MAC ? '⇧⌘' : 'Ctrl+Shift+';
+  const ALT = IS_MAC ? '⌥' : 'Alt+';
+  const dirOf = (path: string) => {
+    const inner = path.split(' -> ').pop() || path;
+    return inner.includes('/') ? inner.slice(0, inner.lastIndexOf('/')).replace(/\//g, '.') : '';
+  };
+  const paletteClasses = (): PaletteItem[] => {
+    if (mode === 'decompile' && decompiled) {
+      return decompiledPaths.map(path => {
+        const lf = letterFor(path, sourceKinds.get(path));
+        const name = path.split('/').pop() || path;
+        return { id: path, title: name.replace(/\.java$/, ''), detail: packageOf(path), mark: { text: lf.letter, tone: lf.tone }, match: path, run: () => openFile(path) };
+      });
+    }
+    if (mode === 'compare' && diffResult) {
+      return allEntries(diffResult).map(({ path, status }) => {
+        const ch = CHANGE_OF[status];
+        const name = (path.split(' -> ').pop() || path).split('/').pop() || path;
+        const dir = dirOf(path);
+        return {
+          id: path,
+          title: name.replace(/\.(java|class)$/, ''),
+          detail: `${dir ? `${dir} · ` : ''}${CHANGE_META[ch].glyph} ${CHANGE_META[ch].label}`,
+          mark: { text: CHANGE_META[ch].glyph, tone: `g-${ch}` },
+          match: path,
+          run: () => setSelectedFile(path),
+        };
+      });
+    }
+    return [];
+  };
+  // Every method and field of the decompiled sources (built when first searched).
+  const paletteSymbols = mode === 'decompile' && decompiled ? () => {
+    const out: PaletteItem[] = [];
+    for (const path of javaPaths) {
+      const f = decompiled[path];
+      if (!f || f.encoding !== 'utf8') continue;
+      const cls = (path.split('/').pop() || path).replace(/\.java$/, '');
+      for (const o of parseOutline(f.content)) {
+        if (o.kind === 'class') continue;
+        const [params, ret] = o.detail.split(' : ');
+        out.push({
+          id: `${path}:${o.line}:${o.name}`,
+          title: o.kind === 'method' ? `${cls}.${o.name}${params}` : `${cls}.${o.name}`,
+          detail: `${o.kind === 'method' ? (ret ? `returns ${ret} · ` : '') : `${o.detail.replace(/^: /, '')} · `}line ${o.line}`,
+          mark: { text: o.kind === 'method' ? 'm' : 'f', tone: `cp-${o.kind}` },
+          match: `${cls}.${o.name}`,
+          run: () => { openFile(path); setTimeout(() => flashLine(o.line), 150); },
+        });
+      }
+    }
+    return out;
+  } : undefined;
+  const paletteCommands = (): PaletteItem[] => {
+    const out: PaletteItem[] = [];
+    const add = (title: string, detail: string, run: () => void, keys?: string) => out.push({ id: `${detail}:${title}`, title, detail, run, keys });
+    if (mode === 'compare' && diffResult) {
+      add('Next change', 'compare', () => compareCmds.current?.nextChange(), 'n');
+      add('Previous change', 'compare', () => compareCmds.current?.prevChange(), 'p');
+      add('Next file', 'compare', () => compareCmds.current?.nextFile(), 'j');
+      add('Previous file', 'compare', () => compareCmds.current?.prevFile(), 'k');
+      add('Toggle split / unified diff', 'compare', () => compareCmds.current?.toggleView(), `${ALT}S`);
+      add('Filter files', 'compare', () => compareCmds.current?.focusFilter(), '/');
+      add('New comparison', 'compare', resetCompare);
+    }
+    if (mode === 'decompile' && decompiled) {
+      add('Download sources.zip', 'decompile', downloadZip, `${SHIFT_MOD}S`);
+      add('Go back', 'decompile', navBack, `${ALT}←`);
+      add('Go forward', 'decompile', navForward, `${ALT}→`);
+      add('Filter explorer', 'decompile', () => explorerFilterRef.current?.focus(), '/');
+      add('Decompile another file', 'decompile', resetDecompile);
+    }
+    if (mode === 'profile' && jfrResult) {
+      add('Export flame graph as SVG', 'profile', () => flameExport.current?.());
+      add('Open another recording', 'profile', resetProfile);
+    }
+    if (mode === 'markdown') {
+      add('Save .md', 'markdown', () => mdActions.current?.save(), `${MOD}S`);
+      add('Export HTML', 'markdown', () => mdActions.current?.exportHtml());
+    }
+    for (const t of TOOLS) if (t.id !== mode) add(`Switch to ${t.name}`, 'tools', () => switchMode(t.id), t.key);
+    if (mode !== 'home') add('Go home', 'tools', () => switchMode('home'));
+    add('Open file…', 'file', () => openPicker.current?.click(), `${MOD}O`);
+    add('Toggle light / dark theme', 'view', toggleTheme, `${SHIFT_MOD}L`);
+    return out;
+  };
 
   const toolName = (t: Tool) => (t === 'home' ? 'home' : t);
   const crumbs: string[] = [toolName(mode)];
@@ -1407,7 +1464,15 @@ export default function App() {
 
   return (
     <div className="wb">
-      <TitleBar crumbs={crumbs} dirty={mode === 'markdown' && !!mdStatus?.dirty} onHome={() => switchMode('home')} actions={titleActions} />
+      <TitleBar
+        center={(
+          <button className="wb-search" onClick={() => setPalette('')} aria-label="Search classes, files and commands">
+            <Search size={14} aria-hidden />
+            <span className="wb-search-text">Search classes, files and commands…</span>
+            <kbd>{MOD}K</kbd>
+          </button>
+        )}
+        crumbs={crumbs} dirty={mode === 'markdown' && !!mdStatus?.dirty} onHome={() => switchMode('home')} actions={titleActions} />
       <ActivityBar tool={mode} onSelect={switchMode} busy={busyTool ? { [busyTool]: isProcessing } : undefined} />
 
       <main className="wb-main">
@@ -1494,6 +1559,7 @@ export default function App() {
           expanded={expandedNested}
           onSwap={() => { const a = jar1File, b = jar2File; setJar1File(b); setJar2File(a); setSelectedFile(null); handleCompare(b, a); }}
           onStatus={setCompareStatus}
+          commandsRef={compareCmds}
         />
       )}
 
@@ -1781,38 +1847,14 @@ export default function App() {
         }}
       />
 
-      {/* ── Quick Open (Ctrl/Cmd+P) ── */}
-      {quickOpen && (
-        <div className="qo-overlay" onClick={() => setQuickOpen(false)}>
-          <div className="qo-modal" onClick={e => e.stopPropagation()}>
-            <input
-              autoFocus
-              className="qo-input"
-              placeholder="Go to class…"
-              value={quickQuery}
-              onChange={e => { setQuickQuery(e.target.value); setQuickIndex(0); }}
-              onKeyDown={onQuickKey}
-              spellCheck={false}
-            />
-            <div className="qo-list">
-              {quickResults.length === 0 && <div className="qo-empty">No matching files</div>}
-              {quickResults.map((r, i) => (
-                <button
-                  key={r.path}
-                  className={`qo-row${i === Math.min(quickIndex, quickResults.length - 1) ? ' active' : ''}`}
-                  onMouseEnter={() => setQuickIndex(i)}
-                  onClick={() => { openFile(r.path); setQuickOpen(false); }}
-                >
-                  <span className={`file-badge badge-${r.path.endsWith('.java') ? 'added' : 'nested'}`}>
-                    {r.path.endsWith('.java') ? 'J' : 'R'}
-                  </span>
-                  <span className="qo-name">{r.path.split('/').pop()}</span>
-                  <span className="qo-path">{r.path}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
+      {palette !== null && (
+        <CommandPalette
+          classes={paletteClasses}
+          symbols={paletteSymbols}
+          commands={paletteCommands}
+          initialQuery={palette}
+          onClose={() => setPalette(null)}
+        />
       )}
 
       {toast && <div className="nav-toast">{toast}</div>}

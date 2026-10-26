@@ -20,6 +20,15 @@ interface TNode {
   entry?: { path: string; status: FileStatus };
 }
 
+export interface CompareCommands {
+  nextChange: () => void;
+  prevChange: () => void;
+  nextFile: () => void;
+  prevFile: () => void;
+  toggleView: () => void;
+  focusFilter: () => void;
+}
+
 export interface CompareStatus { change: string; view: string; lang: string }
 
 function langOf(path: string): { id: string; label: string } {
@@ -77,7 +86,7 @@ function buildTree(entries: { path: string; status: FileStatus }[]): TNode {
 }
 
 export default function CompareView({
-  diff, nameA, nameB, theme, selected, onSelect, onNested, expanding, expanded, onSwap, onStatus,
+  diff, nameA, nameB, theme, selected, onSelect, onNested, expanding, expanded, onSwap, onStatus, commandsRef,
 }: {
   diff: DiffResult;
   nameA: string;
@@ -90,6 +99,8 @@ export default function CompareView({
   expanded: Set<string>;
   onSwap: () => void;
   onStatus?: (s: CompareStatus) => void;
+  /** Receives the view's navigation, for the command palette. */
+  commandsRef?: { current: CompareCommands | null };
 }) {
   const [chip, setChip] = useState<Chip>('changed');
   const [query, setQuery] = useState('');
@@ -201,10 +212,24 @@ export default function CompareView({
     open(order[i < 0 ? (dir > 0 ? 0 : order.length - 1) : Math.min(order.length - 1, Math.max(0, i + dir))]);
   };
 
-  // Keyboard: / filter, j/k files, n/p changes.
+  useEffect(() => {
+    if (!commandsRef) return;
+    commandsRef.current = {
+      nextChange: () => goHunk(1),
+      prevChange: () => goHunk(-1),
+      nextFile: () => goFile(1),
+      prevFile: () => goFile(-1),
+      toggleView: () => setSplit((v) => !v),
+      focusFilter: () => filterRef.current?.focus(),
+    };
+    return () => { commandsRef.current = null; };
+  });
+
+  // Keyboard: / filter, j/k files, n/p changes, Alt+S split/unified.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
+      if (e.altKey && !e.metaKey && !e.ctrlKey && e.code === 'KeyS') { e.preventDefault(); setSplit((v) => !v); return; }
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) {
         if (e.key === 'Escape' && t === filterRef.current) { setQuery(''); t.blur(); }
