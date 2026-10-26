@@ -227,6 +227,40 @@ function mergeNestedDiff(prev: DiffResult, pfx: string, sub: DiffResult): DiffRe
   };
 }
 
+// How-to procedures shown on the start page; the active tab's comes first.
+const PROCEDURES: Record<'compare' | 'decompile' | 'profile', { title: string; steps: { key: string; text: React.ReactNode }[] }> = {
+  compare: {
+    title: 'How to compare two JAR files',
+    steps: [
+      { key: 'Load', text: <>Put the original build in <var>a/</var> and the new one in <var>b/</var>: drag them in, or click a row to choose a file.</> },
+      { key: 'Diff', text: <>Entries are hashed and matched by path. Archives nested inside, such as <code>BOOT-INF/lib</code> or <code>WEB-INF/lib</code>, are opened and compared too.</> },
+      { key: 'Read', text: <>Modified classes are decompiled and shown side by side, so the change reads as Java rather than bytecode.</> },
+    ],
+  },
+  decompile: {
+    title: 'How to decompile a JAR file',
+    steps: [
+      { key: 'Switch', text: <>Open the <em>Decompile</em> tab and load a single <code>.jar</code>, <code>.war</code> or <code>.ear</code>.</> },
+      { key: 'Extract', text: <>Every class goes through the CFR decompiler; resources are copied out unchanged.</> },
+      { key: 'Keep', text: <>Browse the package tree with syntax highlighting, then download the whole tree as a <code>.zip</code>.</> },
+    ],
+  },
+  profile: {
+    title: 'How to analyze a JFR recording',
+    steps: [
+      { key: 'Record', text: <>Start the JVM with <code>-XX:StartFlightRecording=duration=60s,filename=app.jfr,settings=profile</code>, or attach later with <code>jcmd &lt;pid&gt; JFR.start</code>.</> },
+      { key: 'Open', text: <>Load the <code>.jfr</code> file on the <em>Profile</em> tab. It is parsed in the page; nothing is sent anywhere.</> },
+      { key: 'Read', text: <>Sort hot methods by self or total samples, and click one to find it in the flame graph.</> },
+    ],
+  },
+};
+
+function procedureOrder(mode: Mode): ('compare' | 'decompile' | 'profile')[] {
+  const all = ['compare', 'decompile', 'profile'] as const;
+  const first = mode === 'decompile' || mode === 'profile' ? mode : 'compare';
+  return [first, ...all.filter((k) => k !== first)];
+}
+
 export default function App() {
   const [mode, setMode] = useState<Mode>('compare');
 
@@ -1277,7 +1311,7 @@ export default function App() {
       <nav className="navbar">
         <div className="navbar-left">
           <button className="navbar-brand" onClick={goHome} title="Back to home">
-            <span className="navbar-logo">⬡</span>
+            <span className="navbar-mark" aria-hidden />
             <span className="navbar-title">jar-compare</span>
           </button>
 
@@ -1306,7 +1340,7 @@ export default function App() {
           {jfrResult && jfrFile && (
             <div className="navbar-jars">
               <span className="jar-pill">{jfrFile.name}</span>
-              <span className="jar-arrow">📊 profile</span>
+              <span className="jar-arrow">profile</span>
             </div>
           )}
         </div>
@@ -1321,10 +1355,10 @@ export default function App() {
             </button>
           )}
           {hasResults && mode !== 'markdown' && (
-            <button className="btn btn-icon" onClick={goHome} title="Home">⌂</button>
+            <button className="btn btn-icon" onClick={goHome} title="Back to the start page">Home</button>
           )}
-          <button className="btn btn-icon" onClick={toggleTheme} title="Toggle theme">
-            {theme === 'dark' ? '☀' : '☾'}
+          <button className="btn btn-icon navbar-theme" onClick={toggleTheme} title="Toggle theme" aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}>
+            {theme === 'dark' ? 'Light' : 'Dark'}
           </button>
         </div>
       </nav>
@@ -1404,32 +1438,23 @@ export default function App() {
           </main>
 
           <section className="sheet" aria-label="About JAR Compare">
-            <div className="sheet-row">
-              <div className="sheet-label"><span>§01</span>Procedure</div>
-              <div className="sheet-body">
-                <h2>How to compare two JAR files</h2>
-                <ol className="proc">
-                  <li><b>Load.</b> Put the original build in <var>a/</var> and the new one in <var>b/</var>: drag them in, or click a row to choose a file.</li>
-                  <li><b>Diff.</b> Entries are hashed and matched by path. Archives nested inside, such as <code>BOOT-INF/lib</code> or <code>WEB-INF/lib</code>, are opened and compared too.</li>
-                  <li><b>Read.</b> Modified classes are decompiled and shown side by side, so the change reads as Java rather than bytecode.</li>
-                </ol>
-              </div>
-            </div>
+            {procedureOrder(mode).map((key, i) => {
+              const proc = PROCEDURES[key];
+              return (
+                <div className="sheet-row" key={key}>
+                  <div className="sheet-label"><span>§0{i + 1}</span>Procedure</div>
+                  <div className="sheet-body">
+                    <h2>{proc.title}</h2>
+                    <ol className="proc">
+                      {proc.steps.map((step) => <li key={step.key}><b>{step.key}.</b> {step.text}</li>)}
+                    </ol>
+                  </div>
+                </div>
+              );
+            })}
 
             <div className="sheet-row">
-              <div className="sheet-label"><span>§02</span>Procedure</div>
-              <div className="sheet-body">
-                <h2>How to decompile a JAR file</h2>
-                <ol className="proc">
-                  <li><b>Switch.</b> Open the <em>Decompile</em> tab and load a single <code>.jar</code>, <code>.war</code> or <code>.ear</code>.</li>
-                  <li><b>Extract.</b> Every class goes through the CFR decompiler; resources are copied out unchanged.</li>
-                  <li><b>Keep.</b> Browse the package tree with syntax highlighting, then download the whole tree as a <code>.zip</code>.</li>
-                </ol>
-              </div>
-            </div>
-
-            <div className="sheet-row">
-              <div className="sheet-label"><span>§03</span>Coverage</div>
+              <div className="sheet-label"><span>§04</span>Coverage</div>
               <div className="sheet-body">
                 <h2>What it handles</h2>
                 <dl className="spec">
@@ -1444,7 +1469,7 @@ export default function App() {
             </div>
 
             <div className="sheet-row sheet-row--statement">
-              <div className="sheet-label"><span>§04</span>Privacy</div>
+              <div className="sheet-label"><span>§05</span>Privacy</div>
               <div className="sheet-body">
                 <h2 className="statement">Your bytecode never leaves this tab.</h2>
                 <p>
@@ -1456,7 +1481,7 @@ export default function App() {
             </div>
 
             <div className="sheet-row">
-              <div className="sheet-label"><span>§05</span>Questions</div>
+              <div className="sheet-label"><span>§06</span>Questions</div>
               <div className="sheet-body">
                 <h2>Frequently asked questions</h2>
                 <div className="faq">

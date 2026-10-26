@@ -43,7 +43,8 @@ function enqueue<T>(fn: (m: MermaidApi) => Promise<T>, theme: Theme = mermaidThe
       mermaid.initialize({
         startOnLoad: false,
         securityLevel: 'strict',
-        theme: theme === 'dark' ? 'dark' : 'default',
+        // 'neutral' (greys) suits the paper-and-ink page better than mermaid's lavender default.
+        theme: theme === 'dark' ? 'dark' : 'neutral',
         fontFamily: 'var(--font-sans)',
         // Errors are shown in our own UI; don't let mermaid append its own to <body>.
         suppressErrorRendering: true,
