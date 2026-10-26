@@ -15,7 +15,7 @@ import javascript from 'react-syntax-highlighter/dist/esm/languages/prism/javasc
 import css from 'react-syntax-highlighter/dist/esm/languages/prism/css';
 import JSZip from 'jszip';
 import { parseJfr, type JfrResult } from './jfr';
-import Profiler from './Profiler';
+import Profiler, { type ProfileStatus } from './Profiler';
 import MarkdownWorkspace from './MarkdownWorkspace';
 import Intake from './Intake';
 import CompareView, { type CompareStatus } from './CompareView';
@@ -207,6 +207,8 @@ export default function App() {
   const [srcTabs, setSrcTabs] = useState<string[]>([]);
   const explorerFilterRef = useRef<HTMLInputElement>(null);
   const [compareStatus, setCompareStatus] = useState<CompareStatus | null>(null);
+  const [profileStatus, setProfileStatus] = useState<ProfileStatus | null>(null);
+  const flameExport = useRef<(() => void) | null>(null);
   const [mdIncoming, setMdIncoming] = useState<{ id: number; name: string; text: string } | null>(null);
   const openPicker = useRef<HTMLInputElement>(null);
   const remember = (kind: Exclude<Tool, 'home'>, label: string) => setRecent(addRecent(kind, label));
@@ -416,6 +418,20 @@ export default function App() {
     navRef.current = { stack: [], index: -1 };
     setNav({ stack: [], index: -1 });
     setQuickOpen(false);
+  };
+
+  /** From Profile: open a class's decompiled source at a line, if it has been decompiled. */
+  const openSourceFromProfile = (fqnClass: string, line: number): boolean => {
+    const base = fqnClass.split('$')[0].replace(/\./g, '/') + '.java';
+    const path = decompiled && Object.keys(decompiled).find(p => p === base || p.endsWith('/' + base));
+    if (!path) {
+      showToast(`Decompile the archive that contains ${fqnClass.split('.').pop()} to open its source`);
+      return false;
+    }
+    setMode('decompile');
+    openFile(path);
+    setTimeout(() => flashLine(line), 150);
+    return true;
   };
 
   const resetProfile = () => {
@@ -1354,7 +1370,10 @@ export default function App() {
         </>
       )}
       {mode === 'profile' && jfrResult && (
-        <button className="wb-btn wb-btn-primary" onClick={resetProfile}><RotateCcw size={14} /> Open recording</button>
+        <>
+          <button className="wb-btn" onClick={() => flameExport.current?.()}><FileDown size={14} /> Export SVG</button>
+          <button className="wb-btn wb-btn-primary" onClick={resetProfile}><RotateCcw size={14} /> Open recording</button>
+        </>
       )}
       <ThemeButton theme={theme} onToggle={toggleTheme} />
     </>
@@ -1670,7 +1689,16 @@ export default function App() {
       )}
 
       {/* ── Results: PROFILE (JFR) ───────────────── */}
-      {mode === 'profile' && jfrResult && <Profiler result={jfrResult} />}
+      {mode === 'profile' && jfrResult && (
+        <Profiler
+          key={jfrFile?.name ?? 'jfr'}
+          result={jfrResult}
+          theme={theme}
+          onStatus={setProfileStatus}
+          onOpenSource={openSourceFromProfile}
+          exportRef={flameExport}
+        />
+      )}
 
       {/* ── Results: MARKDOWN ────────────────────── */}
       {mode === 'markdown' && (
@@ -1688,6 +1716,8 @@ export default function App() {
         left={<>
           {mode === 'compare' && diffResult ? (
             <span>{allChanged(diffResult)} changed{compareMs !== null ? ` · compared in ${(compareMs / 1000).toFixed(1)} s` : ''}</span>
+          ) : mode === 'profile' && jfrResult ? (
+            <><span>parsed in the browser · no JVM needed</span><span>jdk.ExecutionSample</span></>
           ) : mode === 'decompile' && decompiled ? (
             <span>decompiled {javaPaths.length} classes{decompileMs !== null ? ` in ${(decompileMs / 1000).toFixed(1)} s` : ''}</span>
           ) : (
@@ -1705,6 +1735,9 @@ export default function App() {
             </>
           )}
           {mode === 'decompile' && classInfo && <span>{classInfo.lines} lines · UTF-8 · Java · CFR</span>}
+          {mode === 'profile' && jfrResult && profileStatus && (
+            <><span>zoom: {profileStatus.zoom}</span><span>{profileStatus.metric} time</span></>
+          )}
           <span>{theme}</span>
         </>}
       />

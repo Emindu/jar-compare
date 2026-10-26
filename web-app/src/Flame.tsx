@@ -1,102 +1,62 @@
-import React, { useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import type { FlameNode } from './jfr';
+import { FLAME_ROW as ROW, categoryOf, layout, samePath, splitName, type Cell } from './profileModel';
 
-// Icicle/flame-graph renderer. Root at the top; depth grows downward; a cell's
-// width is proportional to its sample count relative to the focused node.
+// Icicle flame graph: the zoomed frame at the top, callees below, widths
+// proportional to samples. Click a frame to select it, double-click to zoom.
+// Frames are coloured by where the code lives: your code, libraries, JDK/VM.
 
-const ROW = 20; // px per stack depth
-
-// Stable warm hue per method name (classic flame-graph palette: reds→yellows).
-function colorFor(name: string): string {
-  let h = 0;
-  for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) >>> 0;
-  const hue = 8 + (h % 42);          // 8°–50°
-  const sat = 62 + (h >> 8) % 16;    // 62–78%
-  const light = 48 + (h >> 16) % 10; // 48–58%
-  return `hsl(${hue} ${sat}% ${light}%)`;
-}
-
-interface Cell { node: FlameNode; depth: number; x: number; w: number; }
-
-function layout(focus: FlameNode): { cells: Cell[]; maxDepth: number } {
-  const cells: Cell[] = [];
-  let maxDepth = 0;
-  const total = focus.value || 1;
-  const walk = (node: FlameNode, depth: number, x: number) => {
-    const w = node.value / total;
-    cells.push({ node, depth, x, w });
-    if (depth > maxDepth) maxDepth = depth;
-    let cx = x;
-    for (const c of node.children) {
-      walk(c, depth + 1, cx);
-      cx += c.value / total;
-    }
-  };
-  walk(focus, 0, 0);
-  return { cells, maxDepth };
-}
-
-export default function Flame({ root, highlight }: { root: FlameNode; highlight: string }) {
-  const [focus, setFocus] = useState<FlameNode>(root);
+export default function Flame({
+  focus, focusPath, total, query, selected, highlightName, onSelect, onZoom,
+}: {
+  focus: FlameNode;
+  focusPath: string[];
+  total: number;
+  query: string;
+  selected: string[] | null;
+  /** Highlight every frame of this method (e.g. picked in the table). */
+  highlightName: string | null;
+  onSelect: (path: string[]) => void;
+  onZoom: (path: string[]) => void;
+}) {
   const [hover, setHover] = useState<{ cell: Cell; x: number; y: number } | null>(null);
-
-  // Reset focus when a new recording (new root) comes in.
-  const rootRef = React.useRef(root);
-  if (rootRef.current !== root) { rootRef.current = root; if (focus !== root) setFocus(root); }
-
-  const { cells, maxDepth } = useMemo(() => layout(focus), [focus]);
-  const hl = highlight.trim().toLowerCase();
-  const total = root.value || 1;
+  const { cells, maxDepth } = useMemo(() => layout(focus, focusPath), [focus, focusPath]);
+  const q = query.trim().toLowerCase();
 
   return (
-    <div className="flame">
-      <div className="flame-toolbar">
-        <button
-          className="flame-reset"
-          disabled={focus === root}
-          onClick={() => setFocus(root)}
-          title="Reset zoom"
-        >
-          ⤢ Reset zoom
-        </button>
-        <span className="flame-hint">Click a frame to zoom · {root.value} samples</span>
-      </div>
-
-      <div className="flame-canvas" style={{ height: (maxDepth + 1) * ROW }}>
-        {cells.map((cell, i) => {
+    <div className="pf-flame" onMouseLeave={() => setHover(null)}>
+      <div className="pf-flame-canvas" style={{ height: (maxDepth + 1) * ROW }}>
+        {cells.map((cell) => {
           const name = cell.node.name;
-          const dim = hl !== '' && !name.toLowerCase().includes(hl);
-          const pct = ((cell.node.value / total) * 100).toFixed(1);
+          const cat = categoryOf(name);
+          const match = q !== '' && name.toLowerCase().includes(q);
+          const isSel = samePath(cell.path, selected);
+          const isHl = highlightName !== null && name === highlightName;
+          const dim = (q !== '' && !match) || (highlightName !== null && !isHl && !isSel);
           return (
-            <div
-              key={i}
-              className={`flame-cell${dim ? ' dim' : ''}`}
-              style={{
-                left: `${cell.x * 100}%`,
-                width: `${cell.w * 100}%`,
-                top: cell.depth * ROW,
-                height: ROW - 1,
-                background: colorFor(name),
-              }}
-              onClick={(e) => { e.stopPropagation(); setFocus(cell.node); }}
-              onMouseEnter={(e) => setHover({ cell, x: e.clientX, y: e.clientY })}
+            <button
+              key={cell.path.join('\u0001')}
+              className={`pf-cell cat-${cat}${dim ? ' is-dim' : ''}${isSel || isHl || match ? ' is-hot' : ''}${isSel ? ' is-sel' : ''}`}
+              style={{ left: `${cell.x * 100}%`, width: `${cell.w * 100}%`, top: cell.depth * ROW, height: ROW - 2 }}
+              onClick={() => onSelect(cell.path)}
+              onDoubleClick={() => onZoom(cell.path)}
               onMouseMove={(e) => setHover({ cell, x: e.clientX, y: e.clientY })}
-              onMouseLeave={() => setHover(null)}
+              tabIndex={cell.w > 0.02 ? 0 : -1}
+              aria-label={`${name}, ${cell.node.value} samples`}
             >
-              <span className="flame-label">{name}</span>
-              <span className="flame-cell-pct">{cell.w > 0.08 ? `${pct}%` : ''}</span>
-            </div>
+              <span className="pf-cell-label">{cell.depth === 0 && cell.path.length === 1 ? 'all' : splitName(name).short}</span>
+            </button>
           );
         })}
       </div>
-
       {hover && (
-        <div className="flame-tip" style={{ left: hover.x + 12, top: hover.y + 12 }}>
-          <div className="flame-tip-name">{hover.cell.node.name}</div>
-          <div className="flame-tip-meta">
-            {hover.cell.node.value} samples ({((hover.cell.node.value / total) * 100).toFixed(2)}%)
+        <div className="pf-tip" style={{ left: hover.x + 14, top: hover.y + 14 }}>
+          <div className="pf-tip-name">{hover.cell.node.name}</div>
+          <div className="pf-tip-meta">
+            {hover.cell.node.value} samples · {((hover.cell.node.value / total) * 100).toFixed(1)}%
             {hover.cell.node.self > 0 && ` · ${hover.cell.node.self} self`}
           </div>
+          <div className="pf-tip-hint">click to select · double-click to zoom</div>
         </div>
       )}
     </div>
