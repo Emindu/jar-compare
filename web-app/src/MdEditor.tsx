@@ -6,8 +6,9 @@ import {
 } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap, indentWithTab, undo, redo } from '@codemirror/commands';
 import {
-  syntaxHighlighting, HighlightStyle, bracketMatching, indentOnInput, foldGutter, foldKeymap, syntaxTree,
+  syntaxHighlighting, HighlightStyle, bracketMatching, indentOnInput, foldGutter, foldKeymap, syntaxTree, ensureSyntaxTree,
 } from '@codemirror/language';
+import { linter, lintGutter, type Diagnostic } from '@codemirror/lint';
 import { markdown, markdownLanguage, markdownKeymap } from '@codemirror/lang-markdown';
 import { languages } from '@codemirror/language-data';
 import {
@@ -16,6 +17,8 @@ import {
 } from '@codemirror/autocomplete';
 import { search, searchKeymap, highlightSelectionMatches, openSearchPanel } from '@codemirror/search';
 import { tags as t } from '@lezer/highlight';
+import { MermaidPreview } from './Diagram';
+import { checkMermaid, cleanMermaidMessage, type Theme } from './mermaidSource';
 
 // Markdown source editor (CodeMirror 6): syntax highlighting (including fenced
 // code languages), list continuation on Enter, formatting shortcuts, a toolbar,
@@ -85,6 +88,11 @@ const editorTheme = EditorView.theme({
   '.cm-searchMatch': { background: 'var(--amber-bg)', outline: '1px solid var(--amber)' },
   '.cm-searchMatch-selected': { background: 'var(--accent-subtle)' },
   '.cm-foldPlaceholder': { background: 'var(--surface-2)', border: 'none', color: 'var(--text-muted)' },
+  '.cm-tooltip-lint': { fontFamily: 'var(--font-sans)', fontSize: '0.78rem' },
+  '.cm-diagnostic': { whiteSpace: 'pre-wrap', padding: '4px 8px', maxWidth: '520px' },
+  '.cm-diagnostic-error': { borderLeft: '3px solid var(--red)' },
+  '.cm-lintRange-error': { backgroundColor: 'var(--red-bg)' },
+  '.cm-lint-marker': { width: '0.9em', height: '0.9em' },
 });
 
 // ── Formatting commands ────────────────────────────────────────────────────
@@ -377,6 +385,64 @@ const pasteLink = EditorView.domEventHandlers({
   },
 });
 
+// ── Mermaid blocks: parse errors on the right line, live preview ───────────
+
+interface Fence { from: number; code: string; firstLine: number; lastLine: number }
+
+/** ```mermaid blocks in the document (or just the one containing `pos`). */
+function mermaidFences(state: EditorState, pos?: number): Fence[] {
+  const tree = ensureSyntaxTree(state, state.doc.length, 200) ?? syntaxTree(state);
+  const out: Fence[] = [];
+  tree.iterate({
+    from: pos ?? 0,
+    to: pos ?? state.doc.length,
+    enter: (n) => {
+      if (n.name !== 'FencedCode') return;
+      const info = n.node.getChild('CodeInfo');
+      if (info && /^mermaid\b/i.test(state.sliceDoc(info.from, info.to))) {
+        const text = n.node.getChild('CodeText');
+        const start = state.doc.lineAt(n.from).number + 1;
+        out.push({
+          from: n.from,
+          code: text ? state.sliceDoc(text.from, text.to) : '',
+          firstLine: start,
+          lastLine: Math.max(start, state.doc.lineAt(n.to).number - 1),
+        });
+      }
+      return false;
+    },
+  });
+  return out;
+}
+
+const mermaidLinter = linter(async (view) => {
+  const out: Diagnostic[] = [];
+  for (const f of mermaidFences(view.state)) {
+    if (!f.code.trim()) continue;
+    const err = await checkMermaid(f.code);
+    if (!err) continue;
+    const n = err.line ? Math.min(f.firstLine + err.line - 1, f.lastLine) : f.firstLine;
+    const line = view.state.doc.line(Math.min(n, view.state.doc.lines));
+    out.push({ from: line.from, to: line.to, severity: 'error', source: 'mermaid', message: cleanMermaidMessage(err.message) });
+  }
+  return out;
+}, { delay: 600 });
+
+function LivePreview({ fence, theme, onClose }: { fence: Fence; theme: Theme; onClose: () => void }) {
+  const [min, setMin] = useState(false);
+  return (
+    <div className={`md-live${min ? ' min' : ''}`}>
+      <div className="md-live-hd">
+        <button className="md-live-title" onClick={() => setMin((v) => !v)} title={min ? 'Show preview' : 'Minimize'}>
+          {min ? '▸' : '▾'} ◇ Live preview <span>· lines {fence.firstLine}–{fence.lastLine}</span>
+        </button>
+        <button className="md-live-x" onClick={onClose} title="Hide for this diagram">✕</button>
+      </div>
+      {!min && <div className="md-live-body"><MermaidPreview code={fence.code} theme={theme} /></div>}
+    </div>
+  );
+}
+
 // ── Component ──────────────────────────────────────────────────────────────
 
 function headingLines(state: EditorState): number[] {
@@ -400,9 +466,10 @@ function statsOf(state: EditorState): Stats {
 }
 
 export default function MdEditor({
-  value, onChange, onHeading, ref,
+  value, onChange, onHeading, theme, ref,
 }: {
   value: string;
+  theme: Theme;
   onChange: (text: string) => void;
   /** Called with the index of the heading the cursor is under (-1 before the first). */
   onHeading?: (index: number) => void;
@@ -412,11 +479,14 @@ export default function MdEditor({
   const viewRef = useRef<EditorView | null>(null);
   const cb = useRef({ onChange, onHeading });
   const [stats, setStats] = useState<Stats>({ line: 1, col: 1, sel: 0, words: 0 });
+  const [fence, setFence] = useState<Fence | null>(null);
+  const [hiddenFence, setHiddenFence] = useState<number | null>(null);
 
   useEffect(() => { cb.current = { onChange, onHeading }; });
 
   useEffect(() => {
     let timer = 0;
+    let fenceTimer = 0;
     let lastHeading = -2;
     const view = new EditorView({
       parent: hostRef.current!,
@@ -447,6 +517,8 @@ export default function MdEditor({
           editorTheme,
           pasteLink,
           autoCloseFence,
+          mermaidLinter,
+          lintGutter(),
           keymap.of([
             ...formatKeymap,
             ...markdownKeymap,
@@ -469,6 +541,9 @@ export default function MdEditor({
               const head = u.state.selection.main.head;
               const idx = headingLines(u.state).filter((p) => p <= head).length - 1;
               if (idx !== lastHeading && u.selectionSet) { lastHeading = idx; cb.current.onHeading?.(idx); }
+              // Live diagram preview while the cursor is inside a mermaid block.
+              clearTimeout(fenceTimer);
+              fenceTimer = window.setTimeout(() => setFence(mermaidFences(u.state, head)[0] ?? null), 350);
             }
           }),
         ],
@@ -480,6 +555,7 @@ export default function MdEditor({
     return () => {
       // Flush a pending edit so nothing typed is lost when the editor closes.
       if (timer) { clearTimeout(timer); cb.current.onChange(view.state.doc.toString()); }
+      clearTimeout(fenceTimer);
       view.destroy();
       viewRef.current = null;
     };
@@ -547,6 +623,9 @@ export default function MdEditor({
         )}
       </div>
       <div className="md-cm" ref={hostRef} />
+      {fence && fence.code.trim() && hiddenFence !== fence.from && (
+        <LivePreview fence={fence} theme={theme} onClose={() => setHiddenFence(fence.from)} />
+      )}
       <div className="md-editor-status">
         <span>Ln {stats.line}, Col {stats.col}</span>
         {stats.sel > 0 && <span>{stats.sel} selected</span>}

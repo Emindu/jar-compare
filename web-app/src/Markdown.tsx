@@ -401,7 +401,7 @@ export default function MarkdownViewer({
           <div className={`md-split md-view-${view}`}>
             {editing && (
               <Suspense fallback={<div className="md-editor md-diagram-loading">Loading editor…</div>}>
-                <MdEditor ref={editorRef} value={text} onChange={onChange} onHeading={onEditorHeading} />
+                <MdEditor ref={editorRef} value={text} onChange={onChange} onHeading={onEditorHeading} theme={theme} />
               </Suspense>
             )}
             {showPreview && <div className="diff-body md-doc-scroll" ref={docRef} onClick={onDocClick} onMouseOver={onDocOver} onMouseOut={onDocOut}>

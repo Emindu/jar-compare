@@ -1,54 +1,16 @@
 import { useContext, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { DiagramLinks, type DiagramEntry } from './diagramLinks';
+import {
+  renderMermaid, checkMermaid, cleanMermaidMessage, prepareSource, diagramType, isFlowchart, flowchartSubgraphs,
+  DEFAULT_VIEW, type Theme, type ViewOptions, type MermaidError,
+} from './mermaidSource';
 
 // Mermaid diagrams: rendering, plus an interaction layer on top of the SVG that
 // mermaid produces. Each rendered SVG is indexed into nodes and edges, which
 // powers click-to-trace (upstream / downstream paths), in-diagram search,
-// highlighting from `code` mentions in the surrounding text, and SVG/PNG export.
-
-type Theme = 'light' | 'dark';
-
-// ── Rendering ──────────────────────────────────────────────────────────────
-
-type MermaidApi = typeof import('mermaid').default;
-let mermaidPromise: Promise<MermaidApi> | null = null;
-let mermaidTheme: Theme | null = null;
-let renderQueue: Promise<unknown> = Promise.resolve();
-let renderSeq = 0;
-
-function loadMermaid(): Promise<MermaidApi> {
-  if (!mermaidPromise) mermaidPromise = import('mermaid').then((m) => m.default);
-  return mermaidPromise;
-}
-
-/** Renders serially: mermaid keeps global state and doesn't like concurrent renders. */
-function renderMermaid(src: string, theme: Theme): Promise<string> {
-  const job = renderQueue.then(async () => {
-    const mermaid = await loadMermaid();
-    if (mermaidTheme !== theme) {
-      mermaid.initialize({
-        startOnLoad: false,
-        securityLevel: 'strict',
-        theme: theme === 'dark' ? 'dark' : 'default',
-        fontFamily: 'var(--font-sans)',
-        // Errors are shown in our own block; don't let mermaid append its own to <body>.
-        suppressErrorRendering: true,
-      });
-      mermaidTheme = theme;
-    }
-    const id = `mmd-${++renderSeq}`;
-    try {
-      await mermaid.parse(src);
-      const { svg } = await mermaid.render(id, src);
-      return svg;
-    } finally {
-      // A failed render can leave its scratch container behind.
-      document.getElementById(`d${id}`)?.remove();
-    }
-  });
-  renderQueue = job.catch(() => undefined);
-  return job;
-}
+// highlighting from `code` mentions in the surrounding text, stepping through
+// sequence diagrams, and SVG/PNG export. View options (layout engine, direction,
+// look, theme) and folded subgraphs are applied to the source before rendering.
 
 // ── Indexing ───────────────────────────────────────────────────────────────
 
@@ -219,8 +181,16 @@ function trace(g: DGraph, key: string): { sel: Set<string>; up: Set<string>; dow
 
 const FOCUS_CLASSES = ['dg-on', 'dg-sel', 'dg-up', 'dg-down', 'dg-hit'];
 
-/** Apply selection / search highlighting to a rendered SVG. Returns the number of search hits. */
-function applyFocus(svg: SVGSVGElement, sel: string | null, query: string): number {
+/** Messages of a sequence diagram, in order. */
+function messages(g: DGraph): DItem[] {
+  return [...g.items.values()].filter((it) => it.kind === 'edge' && g.mode === 'sequence');
+}
+
+/**
+ * Apply search / step / selection highlighting to a rendered SVG (in that priority).
+ * Returns the number of search hits.
+ */
+function applyFocus(svg: SVGSVGElement, sel: string | null, query: string, step: number | null = null): number {
   const g = getGraph(svg);
   svg.querySelectorAll('[data-dg]').forEach((e) => e.classList.remove(...FOCUS_CLASSES));
   const mark = (key: string, ...cls: string[]) => g.items.get(key)?.els.forEach((e) => e.classList.add('dg-on', ...cls));
@@ -232,6 +202,18 @@ function applyFocus(svg: SVGSVGElement, sel: string | null, query: string): numb
     for (const it of g.items.values()) {
       if (it.text.toLowerCase().includes(q)) { hits++; mark(it.key, 'dg-hit'); }
     }
+  } else if (step !== null && g.mode === 'sequence') {
+    // Messages up to the current step stay visible; the current one and its two ends stand out.
+    focus = true;
+    for (const it of g.items.values()) if (it.kind === 'node') mark(it.key);
+    messages(g).forEach((m, i) => {
+      if (i < step) mark(m.key);
+      else if (i === step) {
+        mark(m.key, 'dg-sel');
+        if (m.from) mark(m.from, 'dg-up');
+        if (m.to) mark(m.to, 'dg-down');
+      }
+    });
   } else if (sel && g.items.has(sel)) {
     focus = true;
     const t = trace(g, sel);
@@ -346,13 +328,14 @@ function useFocus(
   dep: unknown,
   sel: string | null,
   query: string,
+  step: number | null,
 ) {
   useEffect(() => {
     const svg = hostRef.current?.querySelector('svg');
     if (!svg) return;
-    const hits = applyFocus(svg, sel, query);
+    const hits = applyFocus(svg, sel, query, step);
     if (countRef.current) countRef.current.textContent = query.trim() ? `${hits} match${hits === 1 ? '' : 'es'}` : '';
-  }, [hostRef, countRef, dep, sel, query]);
+  }, [hostRef, countRef, dep, sel, query, step]);
 }
 
 function keyAt(target: EventTarget | null): string | null {
@@ -375,18 +358,152 @@ function SearchBox({ query, setQuery, countRef }: { query: string; setQuery: (q:
   );
 }
 
-function TraceChip({ label, onClear }: { label: string; onClear: () => void }) {
+interface ChipAction { label: string; title: string; run: () => void }
+
+function TraceChip({ label, onClear, action }: { label: string; onClear: () => void; action?: ChipAction | null }) {
   return (
     <span className="dg-chip" title="Upstream in amber, downstream in green">
       <span className="dg-chip-dot" />
       Tracing <strong>{label}</strong>
+      {action && <button className="dg-chip-action" onClick={action.run} title={action.title}>{action.label}</button>}
       <button onClick={onClear} aria-label="Clear selection">✕</button>
     </span>
   );
 }
 
-function ExportMenu({ hostRef, code, theme, name }: {
-  hostRef: RefObject<HTMLElement | null>; code: string; theme: Theme; name: string;
+// ── View options menu ──────────────────────────────────────────────────────
+
+function ViewMenu({ opts, setOpts, flow, collapsedCount, onCollapseAll, onExpandAll }: {
+  opts: ViewOptions;
+  setOpts: (o: ViewOptions) => void;
+  flow: boolean;
+  collapsedCount: number;
+  onCollapseAll: () => void;
+  onExpandAll: () => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const changed = JSON.stringify(opts) !== JSON.stringify(DEFAULT_VIEW) || collapsedCount > 0;
+  const row = <K extends keyof ViewOptions>(key: K, label: string, choices: [ViewOptions[K], string][]) => (
+    <div className="dg-menu-row">
+      <span className="dg-menu-label">{label}</span>
+      <span className="dg-seg">
+        {choices.map(([v, text]) => (
+          <button key={String(v)} className={opts[key] === v ? 'active' : ''} onClick={() => setOpts({ ...opts, [key]: v })}>
+            {text}
+          </button>
+        ))}
+      </span>
+    </div>
+  );
+  return (
+    <span className="dg-export">
+      <button className={`file-action-btn${changed ? ' active' : ''}`} onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+        ⚙ View ▾
+      </button>
+      {open && (
+        <span className="dg-menu dg-view-menu" onMouseLeave={() => setOpen(false)}>
+          {row('layout', 'Layout', [['dagre', 'Default'], ['elk', 'ELK']])}
+          {flow && row('dir', 'Direction', [['', 'As written'], ['LR', '→'], ['TD', '↓'], ['RL', '←'], ['BT', '↑']])}
+          {row('look', 'Look', [['classic', 'Classic'], ['handDrawn', 'Hand-drawn']])}
+          {row('theme', 'Theme', [['auto', 'Auto'], ['default', 'Default'], ['neutral', 'Neutral'], ['forest', 'Forest'], ['dark', 'Dark'], ['base', 'Base']])}
+          {flow && (
+            <div className="dg-menu-row">
+              <span className="dg-menu-label">Subgraphs</span>
+              <span className="dg-seg">
+                <button onClick={onCollapseAll}>⊟ Collapse all</button>
+                <button onClick={onExpandAll} disabled={!collapsedCount}>⊞ Expand all{collapsedCount ? ` (${collapsedCount})` : ''}</button>
+              </span>
+            </div>
+          )}
+          {changed && (
+            <button className="dg-menu-reset" onClick={() => { setOpts(DEFAULT_VIEW); onExpandAll(); }}>Reset view</button>
+          )}
+        </span>
+      )}
+    </span>
+  );
+}
+
+// ── Sequence step-through ──────────────────────────────────────────────────
+
+function StepBar({ step, total, setStep, playing, setPlaying, onClose }: {
+  step: number;
+  total: number;
+  setStep: (n: number) => void;
+  playing: boolean;
+  setPlaying: (p: boolean) => void;
+  onClose: () => void;
+}) {
+  const last = Math.max(0, total - 1);
+  return (
+    <span className="dg-steps" role="group" aria-label="Step through messages">
+      <button onClick={() => setStep(0)} disabled={step === 0} title="First (Home)">⏮</button>
+      <button onClick={() => setStep(Math.max(0, step - 1))} disabled={step === 0} title="Previous (←)">◀</button>
+      <span className="dg-steps-n">{step + 1} / {total}</span>
+      <button onClick={() => setStep(Math.min(last, step + 1))} disabled={step >= last} title="Next (→)">▶</button>
+      <button onClick={() => setStep(last)} disabled={step >= last} title="Last (End)">⏭</button>
+      <button onClick={() => { if (step >= last) setStep(0); setPlaying(!playing); }} title="Play / pause (Space)">
+        {playing ? '⏸' : '⏯'}
+      </button>
+      <button onClick={onClose} title="Stop stepping">✕</button>
+    </span>
+  );
+}
+
+// ── Errors ─────────────────────────────────────────────────────────────────
+
+function DiagramError({ code, error }: { code: string; error: MermaidError }) {
+  // Show the source with the reported line marked, plus the parser's own message.
+  const lines = code.replace(/\n$/, '').split('\n');
+  const at = error.line;
+  const lo = at ? Math.max(0, at - 4) : 0;
+  const hi = at ? Math.min(lines.length, at + 3) : Math.min(lines.length, 8);
+  const message = cleanMermaidMessage(error.message);
+  return (
+    <div className="md-diagram-error">
+      <strong>Diagram error{at ? ` on line ${at}` : ''}</strong>
+      <pre className="dg-err-src">
+        {lines.slice(lo, hi).map((l, i) => (
+          <span key={lo + i} className={lo + i + 1 === at ? 'dg-err-line' : ''}>
+            <span className="dg-err-n">{lo + i + 1}</span>{l || ' '}{'\n'}
+          </span>
+        ))}
+      </pre>
+      <pre>{message}</pre>
+    </div>
+  );
+}
+
+/** Small self-contained diagram render (used by the editor's live preview). */
+export function MermaidPreview({ code, theme }: { code: string; theme: Theme }) {
+  const [state, setState] = useState<{ svg: string; error: MermaidError | null }>({ svg: '', error: null });
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const error = await checkMermaid(code);
+      if (error) { if (alive) setState((s) => ({ svg: s.svg, error })); return; }
+      try {
+        const svg = await renderMermaid(code, theme);
+        if (alive) setState({ svg, error: null });
+      } catch (e) {
+        if (alive) setState((s) => ({ svg: s.svg, error: { message: String((e as Error)?.message ?? e), line: null } }));
+      }
+    })();
+    return () => { alive = false; };
+  }, [code, theme]);
+  const html = useMemo(() => ({ __html: state.svg }), [state.svg]);
+  return (
+    <>
+      {state.error && <DiagramError code={code} error={state.error} />}
+      {state.svg ? (
+        <div className={`md-diagram-svg${state.error ? ' dg-stale' : ''}`} dangerouslySetInnerHTML={html} />
+      ) : !state.error && <div className="md-diagram-loading">Rendering…</div>}
+    </>
+  );
+}
+
+function ExportMenu({ hostRef, code, source, theme, name }: {
+  hostRef: RefObject<HTMLElement | null>; code: string; source: string; theme: Theme; name: string;
 }) {
   const [open, setOpen] = useState(false);
   const [status, setStatus] = useState('');
@@ -400,7 +517,7 @@ function ExportMenu({ hostRef, code, theme, name }: {
     try {
       return await svgToPng(svg);
     } catch {
-      const plain = await renderMermaid(`%%{init: {"htmlLabels": false, "flowchart": {"htmlLabels": false}}}%%\n${code}`, theme);
+      const plain = await renderMermaid(`%%{init: {"htmlLabels": false, "flowchart": {"htmlLabels": false}}}%%\n${source}`, theme);
       const holder = document.createElement('div');
       holder.style.cssText = 'position:fixed;left:-99999px;top:0';
       holder.innerHTML = plain;
@@ -449,30 +566,62 @@ function ExportMenu({ hostRef, code, theme, name }: {
 
 export function MermaidBlock({ code, theme, name }: { code: string; theme: Theme; name: string }) {
   const [svg, setSvg] = useState('');
-  const [error, setError] = useState('');
+  const [source, setSource] = useState(code);
+  const [error, setError] = useState<MermaidError | null>(null);
   const [showSource, setShowSource] = useState(false);
   const [expanded, setExpanded] = useState(false);
-  const [selected, setSelected] = useState<{ key: string; label: string } | null>(null);
+  const [selected, setSelected] = useState<{ key: string; label: string; cluster: boolean } | null>(null);
   const [query, setQuery] = useState('');
+  const [opts, setOpts] = useState<ViewOptions>(DEFAULT_VIEW);
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const [step, setStep] = useState<number | null>(null);
+  const [playing, setPlaying] = useState(false);
+  const [msgCount, setMsgCount] = useState(0);
   const sel = selected?.key ?? null;
   const figRef = useRef<HTMLElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const countRef = useRef<HTMLSpanElement>(null);
   const entryRef = useRef<DiagramEntry | null>(null);
   const links = useContext(DiagramLinks);
+  const kind = diagramType(code);
+  const flow = isFlowchart(code);
   // A stable object: React 19 re-applies innerHTML whenever this object changes,
   // which would wipe the highlight classes set on the SVG.
   const html = useMemo(() => ({ __html: svg }), [svg]);
 
   useEffect(() => {
     let alive = true;
-    renderMermaid(code, theme)
-      .then((s) => { if (alive) { setSvg(s); setError(''); } })
-      .catch((e) => { if (alive) { setSvg(''); setError(String(e?.message || e)); } });
+    (async () => {
+      // Check the source as written first so error line numbers match what the author sees.
+      const err = await checkMermaid(code);
+      if (!alive) return;
+      if (err) { setSvg(''); setError(err); return; }
+      try {
+        const prepared = await prepareSource(code, opts, collapsed);
+        const out = await renderMermaid(prepared, theme);
+        if (!alive) return;
+        setSvg(out);
+        setSource(prepared);
+        setError(null);
+        setMsgCount((out.match(/data-et="message"/g) || []).length);
+      } catch (e) {
+        if (alive) { setSvg(''); setError({ message: String((e as Error)?.message ?? e), line: null }); }
+      }
+    })();
     return () => { alive = false; };
-  }, [code, theme]);
+  }, [code, theme, opts, collapsed]);
 
-  useFocus(hostRef, countRef, `${svg}|${showSource}`, sel, query);
+  useFocus(hostRef, countRef, `${svg}|${showSource}`, sel, query, step);
+
+  // Auto-advance while playing.
+  useEffect(() => {
+    if (!playing || step === null) return;
+    const t = setTimeout(() => {
+      if (step + 1 >= msgCount) setPlaying(false);
+      else setStep(step + 1);
+    }, 1100);
+    return () => clearTimeout(t);
+  }, [playing, step, msgCount]);
 
   // Let `code` mentions in the document find and highlight things in this diagram.
   useEffect(() => {
@@ -482,7 +631,7 @@ export function MermaidBlock({ code, theme, name }: { code: string; theme: Theme
       el: figRef.current!,
       find: (c) => { const s = svgEl(); return s ? matchItems(getGraph(s), c) : []; },
       preview: (keys) => { const s = svgEl(); if (s) applyXref(s, keys); },
-      select: (k) => { setQuery(''); choose(k); },
+      select: (k) => { setQuery(''); setStep(null); choose(k); },
     };
     entryRef.current = entry;
     return links.register(entry);
@@ -494,36 +643,87 @@ export function MermaidBlock({ code, theme, name }: { code: string; theme: Theme
 
   function choose(k: string | null) {
     const s = hostRef.current?.querySelector('svg');
-    setSelected(k && s ? { key: k, label: itemLabel(getGraph(s), k) } : null);
+    const g = s ? getGraph(s) : null;
+    setSelected(k && g ? { key: k, label: itemLabel(g, k), cluster: !!g.items.get(k)?.cluster } : null);
   }
 
   // Clicking a node selects it; clicking it again or the background clears.
   const toggle = (k: string | null) => {
     setQuery('');
+    if (step !== null) return; // clicks don't change focus while stepping
     choose(k && k !== sel ? k : null);
   };
 
+  const setFold = (id: string, fold: boolean) =>
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (fold) next.add(id); else next.delete(id);
+      return next;
+    });
+
+  // Selected subgraph → offer to fold it; selected folded node → offer to unfold it.
+  const selId = sel?.startsWith('n:') ? sel.slice(2) : null;
+  const chipAction: ChipAction | null = !selId || !flow ? null
+    : collapsed.has(selId) ? { label: '⊞ Expand', title: 'Show this subgraph’s nodes again', run: () => setFold(selId, false) }
+    : selected?.cluster ? { label: '⊟ Collapse', title: 'Fold this subgraph into one node', run: () => setFold(selId, true) }
+    : null;
+
+  const collapseAll = async () => setCollapsed(new Set((await flowchartSubgraphs(code)).map((s) => s.id)));
+
+  const startStepping = () => { setQuery(''); choose(null); setPlaying(false); setStep(0); };
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (step === null || (e.target as HTMLElement).tagName === 'INPUT') return;
+    const last = Math.max(0, msgCount - 1);
+    const next = e.key === 'ArrowRight' ? Math.min(last, step + 1) : e.key === 'ArrowLeft' ? Math.max(0, step - 1)
+      : e.key === 'Home' ? 0 : e.key === 'End' ? last : null;
+    if (next !== null) { e.preventDefault(); setPlaying(false); setStep(next); }
+    else if (e.key === ' ') { e.preventDefault(); setPlaying((p) => !p); }
+    else if (e.key === 'Escape') { setStep(null); setPlaying(false); }
+  };
+  const stepBar = step !== null && (
+    <StepBar
+      step={step}
+      total={msgCount}
+      setStep={(n) => { setPlaying(false); setStep(n); }}
+      playing={playing}
+      setPlaying={setPlaying}
+      onClose={() => { setStep(null); setPlaying(false); }}
+    />
+  );
+  const viewMenu = (
+    <ViewMenu
+      opts={opts}
+      setOpts={setOpts}
+      flow={flow}
+      collapsedCount={collapsed.size}
+      onCollapseAll={collapseAll}
+      onExpandAll={() => setCollapsed(new Set())}
+    />
+  );
+
   return (
-    <figure className="md-diagram" ref={figRef}>
+    <figure className="md-diagram" ref={figRef} tabIndex={step !== null ? 0 : undefined} onKeyDown={onKeyDown}>
       <div className="md-diagram-bar">
-        <span className="md-diagram-kind">◇ {code.trim().split(/\s/)[0] || 'diagram'}</span>
-        {svg && !showSource && <SearchBox query={query} setQuery={setQuery} countRef={countRef} />}
-        {selected && !query && <TraceChip label={selected.label} onClear={() => choose(null)} />}
+        <span className="md-diagram-kind">◇ {kind || 'diagram'}</span>
+        {svg && !showSource && step === null && <SearchBox query={query} setQuery={setQuery} countRef={countRef} />}
+        {selected && !query && step === null && <TraceChip label={selected.label} onClear={() => choose(null)} action={chipAction} />}
+        {stepBar}
         <span className="md-diagram-actions">
+          {kind === 'sequenceDiagram' && svg && !showSource && step === null && msgCount > 0 && (
+            <button className="file-action-btn" onClick={startStepping} title="Walk through the messages one by one">▶ Step</button>
+          )}
+          {svg && !showSource && viewMenu}
           <button className="file-action-btn" onClick={() => setShowSource((v) => !v)}>
             {showSource ? 'Diagram' : 'Source'}
           </button>
-          {svg && !showSource && <ExportMenu hostRef={hostRef} code={code} theme={theme} name={name} />}
+          {svg && !showSource && <ExportMenu hostRef={hostRef} code={code} source={source} theme={theme} name={name} />}
           {svg && <button className="file-action-btn" onClick={() => setExpanded(true)}>⤢ Expand</button>}
         </span>
       </div>
       {showSource ? (
         <pre className="md-diagram-src">{code}</pre>
       ) : error ? (
-        <div className="md-diagram-error">
-          <strong>Diagram error</strong>
-          <pre>{error}</pre>
-        </div>
+        <DiagramError code={code} error={error} />
       ) : svg ? (
         <div
           className="md-diagram-svg"
@@ -545,26 +745,105 @@ export function MermaidBlock({ code, theme, name }: { code: string; theme: Theme
           clear={() => choose(null)}
           query={query}
           setQuery={setQuery}
+          step={step}
+          onKeyDown={onKeyDown}
           onClose={() => setExpanded(false)}
-          exportMenu={<ExportMenu hostRef={hostRef} code={code} theme={theme} name={name} />}
+          chipAction={chipAction}
+          controls={<>{stepBar}</>}
+          menus={<>{viewMenu}<ExportMenu hostRef={hostRef} code={code} source={source} theme={theme} name={name} /></>}
         />
       )}
     </figure>
   );
 }
 
+// ── Expanded view ──────────────────────────────────────────────────────────
+
+/** Overview of a large diagram with the visible area marked; click or drag to move. */
+function Minimap({ svg, hostRef, bodyRef, zoom }: {
+  svg: string;
+  hostRef: RefObject<HTMLDivElement | null>;
+  bodyRef: RefObject<HTMLDivElement | null>;
+  zoom: number;
+}) {
+  const [view, setView] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  const [img, setImg] = useState<{ src: string; w: number; h: number } | null>(null);
+  const mapRef = useRef<HTMLDivElement>(null);
+  const dragging = useRef(false);
+
+  // Mermaid's markup isn't well-formed XML (HTML labels), so serialise the live SVG instead.
+  useEffect(() => {
+    const raf = requestAnimationFrame(() => {
+      const el = hostRef.current?.querySelector('svg');
+      if (!el) return;
+      const { xml, width, height } = serializeSvg(el);
+      const scale = Math.min(220 / width, 160 / height);
+      setImg({ src: 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(xml), w: width * scale, h: height * scale });
+    });
+    return () => cancelAnimationFrame(raf);
+  }, [svg, hostRef]);
+
+  useEffect(() => {
+    const b = bodyRef.current;
+    if (!b) return;
+    const update = () => {
+      const { scrollLeft, scrollTop, scrollWidth, scrollHeight, clientWidth, clientHeight } = b;
+      const fits = scrollWidth <= clientWidth + 2 && scrollHeight <= clientHeight + 2;
+      setView(fits ? null : {
+        x: scrollLeft / scrollWidth, y: scrollTop / scrollHeight,
+        w: clientWidth / scrollWidth, h: clientHeight / scrollHeight,
+      });
+    };
+    const raf = requestAnimationFrame(update);
+    b.addEventListener('scroll', update, { passive: true });
+    window.addEventListener('resize', update);
+    return () => { cancelAnimationFrame(raf); b.removeEventListener('scroll', update); window.removeEventListener('resize', update); };
+  }, [bodyRef, zoom, svg]);
+
+  if (!view || !img) return null;
+  const moveTo = (e: React.MouseEvent) => {
+    const b = bodyRef.current, m = mapRef.current;
+    if (!b || !m) return;
+    const r = m.getBoundingClientRect();
+    const fx = (e.clientX - r.left) / r.width, fy = (e.clientY - r.top) / r.height;
+    b.scrollLeft = fx * b.scrollWidth - b.clientWidth / 2;
+    b.scrollTop = fy * b.scrollHeight - b.clientHeight / 2;
+  };
+  return (
+    <div
+      className="dg-minimap"
+      ref={mapRef}
+      onMouseDown={(e) => { e.stopPropagation(); dragging.current = true; moveTo(e); }}
+      onMouseMove={(e) => { if (dragging.current) moveTo(e); }}
+      onMouseUp={(e) => { e.stopPropagation(); dragging.current = false; }}
+      onMouseLeave={() => { dragging.current = false; }}
+      title="Overview · click or drag to move"
+    >
+      <img src={img.src} alt="" draggable={false} style={{ width: img.w, height: img.h }} />
+      <span
+        className="dg-minimap-view"
+        style={{ left: `${view.x * 100}%`, top: `${view.y * 100}%`, width: `${view.w * 100}%`, height: `${view.h * 100}%` }}
+      />
+    </div>
+  );
+}
+
 function DiagramModal({
-  svg, sel, selLabel, toggle, clear, query, setQuery, onClose, exportMenu,
+  svg, sel, selLabel, toggle, clear, query, setQuery, step, onKeyDown, onClose, chipAction, controls, menus,
 }: {
   svg: string;
   sel: string | null;
+  selLabel: string;
   toggle: (k: string | null) => void;
   clear: () => void;
   query: string;
   setQuery: (q: string) => void;
-  selLabel: string;
+  step: number | null;
+  onKeyDown: (e: React.KeyboardEvent) => void;
   onClose: () => void;
-  exportMenu: React.ReactNode;
+  chipAction: ChipAction | null;
+  controls: React.ReactNode;
+  menus: React.ReactNode;
 }) {
   // Open at fit-to-width, but never so small that labels become unreadable.
   const [zoom, setZoom] = useState(() => {
@@ -578,7 +857,7 @@ function DiagramModal({
   const drag = useRef<{ x: number; y: number; l: number; t: number; moved: boolean } | null>(null);
 
   const html = useMemo(() => ({ __html: svg }), [svg]);
-  useFocus(hostRef, countRef, svg, sel, query);
+  useFocus(hostRef, countRef, svg, sel, query, step);
 
   const fitZoom = () => {
     const vb = hostRef.current?.querySelector('svg')?.viewBox?.baseVal;
@@ -598,57 +877,59 @@ function DiagramModal({
   }, [svg, zoom]);
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !(e.target instanceof HTMLInputElement)) onClose();
+      if (e.key === 'Escape' && step === null && !(e.target instanceof HTMLInputElement)) onClose();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
+  }, [onClose, step]);
 
   return (
     <div className="qo-overlay md-modal-overlay" onClick={onClose}>
-      <div className="md-modal" onClick={(e) => e.stopPropagation()}>
+      <div className="md-modal" onClick={(e) => e.stopPropagation()} onKeyDown={onKeyDown} tabIndex={-1}>
         <div className="md-diagram-bar">
           <span className="md-diagram-kind">{Math.round(zoom * 100)}%</span>
-          <SearchBox query={query} setQuery={setQuery} countRef={countRef} />
-          {sel && selLabel && !query && <TraceChip label={selLabel} onClear={clear} />}
+          {step === null && <SearchBox query={query} setQuery={setQuery} countRef={countRef} />}
+          {sel && selLabel && !query && step === null && <TraceChip label={selLabel} onClear={clear} action={chipAction} />}
+          {controls}
           <span className="md-diagram-actions">
             <button className="file-action-btn" onClick={() => setZoom((z) => Math.max(0.25, z / 1.25))}>−</button>
             <button className="file-action-btn" onClick={() => setZoom(fitZoom())}>Fit</button>
             <button className="file-action-btn" onClick={() => setZoom(1)}>100%</button>
             <button className="file-action-btn" onClick={() => setZoom((z) => Math.min(6, z * 1.25))}>+</button>
-            {exportMenu}
+            {menus}
             <button className="file-action-btn" onClick={onClose}>✕ Close</button>
           </span>
         </div>
-        <div
-          className="md-modal-body"
-          ref={bodyRef}
-          onMouseDown={(e) => {
-            const b = bodyRef.current;
-            if (b) drag.current = { x: e.clientX, y: e.clientY, l: b.scrollLeft, t: b.scrollTop, moved: false };
-          }}
-          onMouseMove={(e) => {
-            const b = bodyRef.current, d = drag.current;
-            if (!b || !d) return;
-            if (Math.abs(e.clientX - d.x) + Math.abs(e.clientY - d.y) > 4) d.moved = true;
-            b.scrollLeft = d.l - (e.clientX - d.x);
-            b.scrollTop = d.t - (e.clientY - d.y);
-          }}
-          onMouseUp={(e) => {
-            // A click (not a drag) selects / clears like in the inline view.
-            if (drag.current && !drag.current.moved) {
-              toggle(keyAt(e.target));
-            }
-            drag.current = null;
-          }}
-          onMouseLeave={() => { drag.current = null; }}
-          onWheel={(e) => {
-            if (!e.ctrlKey && !e.metaKey) return;
-            e.preventDefault();
-            setZoom((z) => Math.min(6, Math.max(0.25, z * (e.deltaY < 0 ? 1.1 : 1 / 1.1))));
-          }}
-        >
-          <div className="md-modal-svg" ref={hostRef} dangerouslySetInnerHTML={html} />
+        <div className="md-modal-stage">
+          <div
+            className="md-modal-body"
+            ref={bodyRef}
+            onMouseDown={(e) => {
+              const b = bodyRef.current;
+              if (b) drag.current = { x: e.clientX, y: e.clientY, l: b.scrollLeft, t: b.scrollTop, moved: false };
+            }}
+            onMouseMove={(e) => {
+              const b = bodyRef.current, d = drag.current;
+              if (!b || !d) return;
+              if (Math.abs(e.clientX - d.x) + Math.abs(e.clientY - d.y) > 4) d.moved = true;
+              b.scrollLeft = d.l - (e.clientX - d.x);
+              b.scrollTop = d.t - (e.clientY - d.y);
+            }}
+            onMouseUp={(e) => {
+              // A click (not a drag) selects / clears like in the inline view.
+              if (drag.current && !drag.current.moved) toggle(keyAt(e.target));
+              drag.current = null;
+            }}
+            onMouseLeave={() => { drag.current = null; }}
+            onWheel={(e) => {
+              if (!e.ctrlKey && !e.metaKey) return;
+              e.preventDefault();
+              setZoom((z) => Math.min(6, Math.max(0.25, z * (e.deltaY < 0 ? 1.1 : 1 / 1.1))));
+            }}
+          >
+            <div className="md-modal-svg" ref={hostRef} dangerouslySetInnerHTML={html} />
+          </div>
+          <Minimap svg={svg} hostRef={hostRef} bodyRef={bodyRef} zoom={zoom} />
         </div>
       </div>
     </div>
