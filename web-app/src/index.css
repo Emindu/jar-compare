@@ -1585,7 +1585,7 @@ h6.md-heading { color: var(--text-muted); }
 }
 .md-diagram-kind { font-size: 0.75rem; font-family: var(--font-mono); color: var(--purple-text); }
 .md-diagram-actions { display: flex; gap: 4px; }
-.md-diagram-svg { padding: 1rem; overflow-x: auto; text-align: center; cursor: zoom-in; }
+.md-diagram-svg { padding: 1rem; overflow-x: auto; text-align: center; }
 .md-diagram-svg svg { max-width: 100%; height: auto; }
 .md-diagram-src {
   margin: 0;
@@ -1629,3 +1629,94 @@ h6.md-heading { color: var(--text-muted); }
   .app.has-results { height: auto; overflow: visible; }
   .workspace, .diff-panel, .md-split, .diff-body { overflow: visible !important; display: block; }
 }
+
+/* ── Diagram interaction: trace, search, text links, export ─────────────── */
+.md-diagram-bar { flex-wrap: wrap; }
+.md-diagram-actions { margin-left: auto; }
+.dg-search { display: inline-flex; align-items: center; gap: 0.4rem; }
+.dg-search .flame-search { width: 160px; padding-top: 0.2rem; padding-bottom: 0.2rem; }
+.dg-count { font-size: 0.72rem; color: var(--text-muted); white-space: nowrap; }
+.dg-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: 340px;
+  padding: 1px 4px 1px 8px;
+  border-radius: 999px;
+  background: var(--accent-subtle);
+  color: var(--text);
+  font-size: 0.74rem;
+  white-space: nowrap;
+}
+.dg-chip strong { overflow: hidden; text-overflow: ellipsis; }
+.dg-chip-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
+.dg-chip button {
+  background: transparent; border: none; color: var(--text-muted); cursor: pointer;
+  font-size: 0.72rem; padding: 0 4px; border-radius: 999px;
+}
+.dg-chip button:hover { color: var(--text); background: var(--surface-2); }
+
+.dg-export { position: relative; display: inline-flex; }
+.dg-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-width: 150px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+}
+.dg-menu button {
+  text-align: left;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  padding: 0.35rem 0.6rem;
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+.dg-menu button:hover { background: var(--accent); color: #fff; }
+
+/* SVG highlighting (classes are set on mermaid's own elements) */
+svg [data-dg] { cursor: pointer; transition: opacity 0.15s; }
+svg.dg-focus [data-dg]:not(.dg-on) { opacity: 0.12; }
+svg .dg-sel > :is(rect, polygon, circle, ellipse, path),
+svg .dg-hit > :is(rect, polygon, circle, ellipse, path) {
+  stroke: var(--accent) !important;
+  stroke-width: 3px !important;
+}
+svg .dg-up > :is(rect, polygon, circle, ellipse, path) { stroke: var(--amber) !important; stroke-width: 2.5px !important; }
+svg .dg-down > :is(rect, polygon, circle, ellipse, path) { stroke: var(--green) !important; stroke-width: 2.5px !important; }
+svg :is(path, line).dg-up { stroke: var(--amber) !important; stroke-width: 2.5px !important; }
+svg :is(path, line).dg-down { stroke: var(--green) !important; stroke-width: 2.5px !important; }
+svg :is(path, line).dg-sel, svg :is(path, line).dg-hit { stroke: var(--accent) !important; stroke-width: 3px !important; }
+svg text.dg-hit, svg text.dg-sel { font-weight: 700 !important; }
+svg .dg-xref > :is(rect, polygon, circle, ellipse, path),
+svg :is(path, line).dg-xref {
+  stroke: #f59e0b !important;
+  stroke-width: 4px !important;
+  filter: drop-shadow(0 0 6px rgba(245, 158, 11, 0.7));
+}
+svg text.dg-xref { font-weight: 700 !important; fill: #f59e0b !important; }
+
+/* inline code that names something drawn in a diagram */
+.md-doc code.md-xref {
+  cursor: pointer;
+  text-decoration: underline dotted var(--purple-text);
+  text-underline-offset: 3px;
+}
+.md-doc code.md-xref:hover { background: var(--purple-bg); color: var(--purple-text); }
+.md-doc code.md-xref-active { background: var(--accent-subtle); color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+
+@keyframes md-diagram-flash {
+  0%   { box-shadow: 0 0 0 0 rgba(245, 158, 11, 0.7); }
+  100% { box-shadow: 0 0 0 14px rgba(245, 158, 11, 0); }
+}
+.md-diagram-flash { animation: md-diagram-flash 0.9s ease-out 2; }

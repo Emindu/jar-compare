@@ -4,6 +4,10 @@ import DOMPurify from 'dompurify';
 import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight, oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import type { MdEditorHandle } from './MdEditor';
+import { MermaidBlock } from './Diagram';
+import { DiagramLinks, type DiagramEntry, type DiagramLinkApi } from './diagramLinks';
+
+type Theme = 'light' | 'dark';
 
 // CodeMirror is sizeable; only load it when the editor is opened.
 const MdEditor = lazy(() => import('./MdEditor'));
@@ -22,8 +26,6 @@ interface MdSection {
   children: MdSection[];
   diagrams: number; // mermaid blocks directly in this section
 }
-
-type Theme = 'light' | 'dark';
 
 // ── Parsing ────────────────────────────────────────────────────────────────
 
@@ -81,162 +83,6 @@ function countDiagrams(s: MdSection): number {
   return s.children.reduce((a, c) => a + countDiagrams(c), s.diagrams);
 }
 
-// ── Mermaid ────────────────────────────────────────────────────────────────
-
-type MermaidApi = typeof import('mermaid').default;
-let mermaidPromise: Promise<MermaidApi> | null = null;
-let mermaidTheme: Theme | null = null;
-let renderQueue: Promise<unknown> = Promise.resolve();
-let renderSeq = 0;
-
-function loadMermaid(): Promise<MermaidApi> {
-  if (!mermaidPromise) mermaidPromise = import('mermaid').then((m) => m.default);
-  return mermaidPromise;
-}
-
-/** Renders serially: mermaid keeps global state and doesn't like concurrent renders. */
-function renderMermaid(src: string, theme: Theme): Promise<string> {
-  const job = renderQueue.then(async () => {
-    const mermaid = await loadMermaid();
-    if (mermaidTheme !== theme) {
-      mermaid.initialize({
-        startOnLoad: false,
-        securityLevel: 'strict',
-        theme: theme === 'dark' ? 'dark' : 'default',
-        fontFamily: 'var(--font-sans)',
-        // Errors are shown in our own block; don't let mermaid append its own to <body>.
-        suppressErrorRendering: true,
-      });
-      mermaidTheme = theme;
-    }
-    const id = `mmd-${++renderSeq}`;
-    try {
-      await mermaid.parse(src);
-      const { svg } = await mermaid.render(id, src);
-      return svg;
-    } finally {
-      // A failed render can leave its scratch container behind.
-      document.getElementById(`d${id}`)?.remove();
-    }
-  });
-  renderQueue = job.catch(() => undefined);
-  return job;
-}
-
-function MermaidBlock({ code, theme, onExpand }: { code: string; theme: Theme; onExpand: (svg: string) => void }) {
-  const [svg, setSvg] = useState('');
-  const [error, setError] = useState('');
-  const [showSource, setShowSource] = useState(false);
-
-  useEffect(() => {
-    let alive = true;
-    renderMermaid(code, theme)
-      .then((s) => { if (alive) { setSvg(s); setError(''); } })
-      .catch((e) => { if (alive) { setSvg(''); setError(String(e?.message || e)); } });
-    return () => { alive = false; };
-  }, [code, theme]);
-
-  return (
-    <figure className="md-diagram">
-      <div className="md-diagram-bar">
-        <span className="md-diagram-kind">◇ {code.trim().split(/\s/)[0] || 'diagram'}</span>
-        <span className="md-diagram-actions">
-          <button className="file-action-btn" onClick={() => setShowSource((v) => !v)}>
-            {showSource ? 'Diagram' : 'Source'}
-          </button>
-          <button className="file-action-btn" onClick={() => navigator.clipboard?.writeText(code)}>Copy</button>
-          {svg && <button className="file-action-btn" onClick={() => onExpand(svg)}>⤢ Expand</button>}
-        </span>
-      </div>
-      {showSource ? (
-        <pre className="md-diagram-src">{code}</pre>
-      ) : error ? (
-        <div className="md-diagram-error">
-          <strong>Diagram error</strong>
-          <pre>{error}</pre>
-        </div>
-      ) : svg ? (
-        <div className="md-diagram-svg" onDoubleClick={() => onExpand(svg)} dangerouslySetInnerHTML={{ __html: svg }} />
-      ) : (
-        <div className="md-diagram-loading">Rendering diagram…</div>
-      )}
-    </figure>
-  );
-}
-
-function DiagramModal({ svg, onClose }: { svg: string; onClose: () => void }) {
-  // Open at fit-to-width, but never so small that labels become unreadable.
-  const [zoom, setZoom] = useState(() => {
-    const m = /viewBox="[\d.-]+ [\d.-]+ ([\d.]+)/.exec(svg);
-    const w = m ? parseFloat(m[1]) : 0;
-    return w ? Math.max(0.5, Math.min(1, (window.innerWidth * 0.94 - 96) / w)) : 1;
-  });
-  const hostRef = useRef<HTMLDivElement>(null);
-  const bodyRef = useRef<HTMLDivElement>(null);
-  const drag = useRef<{ x: number; y: number; l: number; t: number } | null>(null);
-
-  const fitZoom = () => {
-    const vb = hostRef.current?.querySelector('svg')?.viewBox?.baseVal;
-    const avail = (bodyRef.current?.clientWidth ?? 0) - 48;
-    return vb?.width && avail > 0 ? Math.min(1, avail / vb.width) : 1;
-  };
-
-  // Mermaid emits width="100%" + a max-width style, so it always shrinks to fit.
-  // Size it from its viewBox instead so 100% means the diagram's natural size.
-  useEffect(() => {
-    const el = hostRef.current?.querySelector('svg');
-    const vb = el?.viewBox?.baseVal;
-    if (!el || !vb || !vb.width) return;
-    el.style.maxWidth = 'none';
-    el.setAttribute('width', String(vb.width * zoom));
-    el.setAttribute('height', String(vb.height * zoom));
-  }, [svg, zoom]);
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [onClose]);
-  return (
-    <div className="qo-overlay md-modal-overlay" onClick={onClose}>
-      <div className="md-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="md-diagram-bar">
-          <span className="md-diagram-kind">{Math.round(zoom * 100)}%</span>
-          <span className="md-diagram-actions">
-            <button className="file-action-btn" onClick={() => setZoom((z) => Math.max(0.25, z / 1.25))}>−</button>
-            <button className="file-action-btn" onClick={() => setZoom(fitZoom())}>Fit</button>
-            <button className="file-action-btn" onClick={() => setZoom(1)}>100%</button>
-            <button className="file-action-btn" onClick={() => setZoom((z) => Math.min(6, z * 1.25))}>+</button>
-            <button className="file-action-btn" onClick={onClose}>✕ Close</button>
-          </span>
-        </div>
-        <div
-          className="md-modal-body"
-          ref={bodyRef}
-          onMouseDown={(e) => {
-            const b = bodyRef.current;
-            if (b) drag.current = { x: e.clientX, y: e.clientY, l: b.scrollLeft, t: b.scrollTop };
-          }}
-          onMouseMove={(e) => {
-            const b = bodyRef.current, d = drag.current;
-            if (!b || !d) return;
-            b.scrollLeft = d.l - (e.clientX - d.x);
-            b.scrollTop = d.t - (e.clientY - d.y);
-          }}
-          onMouseUp={() => { drag.current = null; }}
-          onMouseLeave={() => { drag.current = null; }}
-          onWheel={(e) => {
-            if (!e.ctrlKey && !e.metaKey) return;
-            e.preventDefault();
-            setZoom((z) => Math.min(6, Math.max(0.25, z * (e.deltaY < 0 ? 1.1 : 1 / 1.1))));
-          }}
-        >
-          <div className="md-modal-svg" ref={hostRef} dangerouslySetInnerHTML={{ __html: svg }} />
-        </div>
-      </div>
-    </div>
-  );
-}
-
 // ── Body rendering ─────────────────────────────────────────────────────────
 
 const LANG_ALIAS: Record<string, string> = {
@@ -244,15 +90,16 @@ const LANG_ALIAS: Record<string, string> = {
   xml: 'markup', html: 'markup', yml: 'yaml', kt: 'kotlin',
 };
 
-function Body({ tokens, theme, onExpand }: { tokens: Token[]; theme: Theme; onExpand: (svg: string) => void }) {
+function Body({ tokens, theme, name }: { tokens: Token[]; theme: Theme; name: string }) {
   // Group consecutive non-code tokens into one HTML chunk; code fences become components.
   const parts = useMemo(() => {
-    const out: ({ kind: 'html'; html: string } | { kind: 'mermaid' | 'code'; code: string; lang: string })[] = [];
+    const out: ({ kind: 'html'; html: { __html: string } } | { kind: 'mermaid' | 'code'; code: string; lang: string })[] = [];
     let run: Token[] = [];
     const flush = () => {
       if (!run.length) return;
       const list = Object.assign([...run], { links: {} }) as Token[] & { links: Record<string, never> };
-      out.push({ kind: 'html', html: DOMPurify.sanitize(marked.parser(list, { gfm: true })) });
+      // Stable objects so re-renders don't reset innerHTML (and the link marks on `code`).
+      out.push({ kind: 'html', html: { __html: DOMPurify.sanitize(marked.parser(list, { gfm: true })) } });
       run = [];
     };
     for (const t of tokens) {
@@ -273,9 +120,9 @@ function Body({ tokens, theme, onExpand }: { tokens: Token[]; theme: Theme; onEx
     <>
       {parts.map((p, i) =>
         p.kind === 'html' ? (
-          <div key={i} className="md-html" dangerouslySetInnerHTML={{ __html: p.html }} />
+          <div key={i} className="md-html" dangerouslySetInnerHTML={p.html} />
         ) : p.kind === 'mermaid' ? (
-          <MermaidBlock key={i} code={p.code} theme={theme} onExpand={onExpand} />
+          <MermaidBlock key={i} code={p.code} theme={theme} name={`${name}-diagram-${i + 1}`} />
         ) : (
           <div key={i} className="md-code">
             {p.lang && <span className="md-code-lang">{p.lang}</span>}
@@ -295,13 +142,12 @@ function Body({ tokens, theme, onExpand }: { tokens: Token[]; theme: Theme; onEx
 }
 
 function Section({
-  sec, theme, collapsed, toggle, onExpand,
+  sec, theme, collapsed, toggle,
 }: {
   sec: MdSection;
   theme: Theme;
   collapsed: Set<string>;
   toggle: (id: string) => void;
-  onExpand: (svg: string) => void;
 }) {
   const isCollapsed = collapsed.has(sec.id);
   const level = Math.min(Math.max(sec.depth, 1), 6);
@@ -325,9 +171,9 @@ function Section({
       </H>
       {!isCollapsed && (
         <div className="md-section-body">
-          <Body tokens={sec.body} theme={theme} onExpand={onExpand} />
+          <Body tokens={sec.body} theme={theme} name={sec.id} />
           {sec.children.map((c) => (
-            <Section key={c.id} sec={c} theme={theme} collapsed={collapsed} toggle={toggle} onExpand={onExpand} />
+            <Section key={c.id} sec={c} theme={theme} collapsed={collapsed} toggle={toggle} />
           ))}
         </div>
       )}
@@ -352,7 +198,20 @@ export default function MarkdownViewer({
   const editing = view !== 'preview';
   const showPreview = view !== 'editor';
   const editorRef = useRef<MdEditorHandle>(null);
-  const [expanded, setExpanded] = useState<string | null>(null);
+
+  // Links between `code` mentions in the text and items in rendered diagrams.
+  const registry = useRef(new Set<DiagramEntry>());
+  const [regVersion, setRegVersion] = useState(0);
+  const [activeSel, setActiveSel] = useState<{ entry: DiagramEntry; key: string } | null>(null);
+  const xrefs = useRef(new WeakMap<Element, { entry: DiagramEntry; keys: string[] }[]>());
+  const links = useMemo<DiagramLinkApi>(() => ({
+    register: (e) => {
+      registry.current.add(e);
+      setRegVersion((v) => v + 1);
+      return () => { registry.current.delete(e); setRegVersion((v) => v + 1); };
+    },
+    onSelect: (e, key) => setActiveSel((prev) => (key ? { entry: e, key } : prev?.entry === e ? null : prev)),
+  }), []);
   const docRef = useRef<HTMLDivElement>(null);
 
   const totalDiagrams = useMemo(() => countDiagrams(root), [root]);
@@ -381,6 +240,34 @@ export default function MarkdownViewer({
     el.addEventListener('scroll', onScroll, { passive: true });
     return () => el.removeEventListener('scroll', onScroll);
   }, [flat, collapsed, view]);
+
+  // Mark inline `code` that names something drawn in a diagram.
+  useEffect(() => {
+    const doc = docRef.current;
+    if (!doc) return;
+    const entries = [...registry.current];
+    doc.querySelectorAll('.md-html code').forEach((c) => {
+      if (c.closest('pre')) return;
+      const text = c.textContent || '';
+      const matches = entries.map((entry) => ({ entry, keys: entry.find(text) })).filter((m) => m.keys.length);
+      c.classList.toggle('md-xref', matches.length > 0);
+      c.classList.toggle('md-xref-active', !!activeSel && matches.some((m) => m.entry === activeSel.entry && m.keys.includes(activeSel.key)));
+      if (matches.length) {
+        xrefs.current.set(c, matches);
+        c.setAttribute('title', 'Shown in a diagram · hover to highlight, click to locate');
+      } else {
+        xrefs.current.delete(c);
+        c.removeAttribute('title');
+      }
+    });
+  }, [regVersion, root, collapsed, view, activeSel]);
+
+  const xrefAt = (t: EventTarget) => {
+    const c = (t as Element).closest?.('code.md-xref');
+    return c ? xrefs.current.get(c) ?? null : null;
+  };
+  const onDocOver = (e: React.MouseEvent) => xrefAt(e.target)?.forEach((m) => m.entry.preview(m.keys));
+  const onDocOut = (e: React.MouseEvent) => xrefAt(e.target)?.forEach((m) => m.entry.preview(null));
 
   const goTo = (id: string, fromEditor = false) => {
     // Expand any collapsed ancestor so the target is visible.
@@ -412,6 +299,16 @@ export default function MarkdownViewer({
 
   // In-document anchor links scroll inside the viewer instead of changing the URL.
   const onDocClick = (e: React.MouseEvent) => {
+    const xref = xrefAt(e.target);
+    if (xref) {
+      const { entry, keys } = xref[0];
+      entry.select(keys[0]);
+      entry.el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      entry.el.classList.remove('md-diagram-flash');
+      void entry.el.offsetWidth; // restart the animation
+      entry.el.classList.add('md-diagram-flash');
+      return;
+    }
     const a = (e.target as HTMLElement).closest('a');
     const href = a?.getAttribute('href');
     if (a && href?.startsWith('#')) {
@@ -481,7 +378,8 @@ export default function MarkdownViewer({
           </div>
           <div className="panel-hints">
             <span>Click a heading’s ▾ to collapse a section</span>
-            <span>Diagrams: <strong>Expand</strong> or double-click to zoom</span>
+            <span>Diagrams: click a node to trace it · double-click to zoom</span>
+            <span>Underlined <code>code</code> is in a diagram: hover or click it</span>
           </div>
         </aside>
 
@@ -506,19 +404,20 @@ export default function MarkdownViewer({
                 <MdEditor ref={editorRef} value={text} onChange={onChange} onHeading={onEditorHeading} />
               </Suspense>
             )}
-            {showPreview && <div className="diff-body md-doc-scroll" ref={docRef} onClick={onDocClick}>
+            {showPreview && <div className="diff-body md-doc-scroll" ref={docRef} onClick={onDocClick} onMouseOver={onDocOver} onMouseOut={onDocOut}>
+              <DiagramLinks.Provider value={links}>
               <article className="md-doc">
-                <Body tokens={root.body} theme={theme} onExpand={setExpanded} />
+                <Body tokens={root.body} theme={theme} name="document" />
                 {root.children.map((c) => (
-                  <Section key={c.id} sec={c} theme={theme} collapsed={collapsed} toggle={toggle} onExpand={setExpanded} />
+                  <Section key={c.id} sec={c} theme={theme} collapsed={collapsed} toggle={toggle} />
                 ))}
               </article>
+              </DiagramLinks.Provider>
             </div>}
           </div>
         </div>
       </div>
 
-      {expanded && <DiagramModal key={expanded} svg={expanded} onClose={() => setExpanded(null)} />}
     </>
   );
 }
