@@ -99,7 +99,7 @@ function Body({ tokens, theme, name }: { tokens: Token[]; theme: Theme; name: st
       if (!run.length) return;
       const list = Object.assign([...run], { links: {} }) as Token[] & { links: Record<string, never> };
       // Stable objects so re-renders don't reset innerHTML (and the link marks on `code`).
-      out.push({ kind: 'html', html: { __html: DOMPurify.sanitize(marked.parser(list, { gfm: true })) } });
+      out.push({ kind: 'html', html: { __html: alerts(DOMPurify.sanitize(marked.parser(list, { gfm: true }))) } });
       run = [];
     };
     for (const t of tokens) {
@@ -124,21 +124,53 @@ function Body({ tokens, theme, name }: { tokens: Token[]; theme: Theme; name: st
         ) : p.kind === 'mermaid' ? (
           <MermaidBlock key={i} code={p.code} theme={theme} name={`${name}-diagram-${i + 1}`} />
         ) : (
-          <div key={i} className="md-code">
-            {p.lang && <span className="md-code-lang">{p.lang}</span>}
-            <SyntaxHighlighter
-              language={p.lang || 'text'}
-              style={theme === 'dark' ? oneDark : oneLight}
-              customStyle={{ margin: 0, background: 'transparent', padding: '0.85rem 1rem', fontSize: '0.82rem' }}
-              codeTagProps={{ style: { fontFamily: 'var(--font-mono)' } }}
-            >
-              {p.code}
-            </SyntaxHighlighter>
-          </div>
+          <CodeBlock key={i} code={p.code} lang={p.lang} theme={theme} />
         ),
       )}
     </>
   );
+}
+
+function CodeBlock({ code, lang, theme }: { code: string; lang: string; theme: Theme }) {
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch { /* clipboard blocked */ }
+  };
+  return (
+    <div className="md-code">
+      <div className="md-code-hd">
+        <span className="md-code-lang">{lang || 'text'}</span>
+        <button className="md-code-copy" onClick={copy}>{copied ? '✓ Copied' : 'Copy'}</button>
+      </div>
+      <SyntaxHighlighter
+        language={lang || 'text'}
+        style={theme === 'dark' ? oneDark : oneLight}
+        customStyle={{ margin: 0, background: 'transparent', padding: '0.85rem 1rem', fontSize: '0.82rem' }}
+        codeTagProps={{ style: { fontFamily: 'var(--font-mono)' } }}
+      >
+        {code}
+      </SyntaxHighlighter>
+    </div>
+  );
+}
+
+const ALERTS: Record<string, [string, string]> = {
+  NOTE: ['ⓘ', 'Note'], TIP: ['💡', 'Tip'], IMPORTANT: ['❕', 'Important'], WARNING: ['⚠', 'Warning'], CAUTION: ['⛔', 'Caution'],
+};
+
+/** GitHub-style callouts: a blockquote starting with [!NOTE], [!TIP], [!IMPORTANT], [!WARNING] or [!CAUTION]. */
+function alerts(html: string): string {
+  return html.replace(
+    /<blockquote>\s*<p>\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*(?:<br>\s*)?/g,
+    (_, kind: string) => {
+      const [icon, title] = ALERTS[kind];
+      return `<blockquote class="md-alert md-alert-${kind.toLowerCase()}"><p class="md-alert-title">${icon} ${title}</p><p>`;
+    },
+  ).replace(/<p>\s*<\/p>/g, '');
 }
 
 function Section({
@@ -184,17 +216,21 @@ function Section({
 // ── Viewer ─────────────────────────────────────────────────────────────────
 
 export default function MarkdownViewer({
-  text, theme, onChange,
+  text, name, theme, onChange, docControls,
 }: {
   text: string;
+  name: string;
   theme: Theme;
   onChange: (t: string) => void;
+  /** Document controls (name, New / Open / Samples) shown at the start of the bar. */
+  docControls?: React.ReactNode;
 }) {
   const { root, flat } = useMemo(() => parseSections(text), [text]);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [active, setActive] = useState('');
   const [filter, setFilter] = useState('');
-  const [view, setView] = useState<'preview' | 'split' | 'editor'>('preview');
+  const [view, setView] = useState<'preview' | 'split' | 'editor'>(() => (window.innerWidth > 900 ? 'split' : 'preview'));
+  const [outlineOpen, setOutlineOpen] = useState(() => window.innerWidth > 1100);
   const editing = view !== 'preview';
   const showPreview = view !== 'editor';
   const editorRef = useRef<MdEditorHandle>(null);
@@ -329,22 +365,37 @@ export default function MarkdownViewer({
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${slugify(flat[0]?.title || 'document') || 'document'}.md`;
+    a.download = name || `${slugify(flat[0]?.title || 'document') || 'document'}.md`;
     a.click();
     URL.revokeObjectURL(url);
   };
 
   return (
     <>
-      <div className="stats-bar">
-        <span className="stats-total">{flat.length} sections</span>
-        <span className="stat stat-added">{totalDiagrams} diagrams</span>
-        <span className="stat stat-nested">{words.toLocaleString()} words</span>
-        <span className="stat stat-modified">{text.split('\n').length} lines</span>
+      <div className="md-docbar">
+        <button
+          className={`file-action-btn md-outline-toggle${outlineOpen ? ' active' : ''}`}
+          onClick={() => setOutlineOpen((v) => !v)}
+          title={outlineOpen ? 'Hide outline' : 'Show outline'}
+        >☰</button>
+        {docControls}
+        <span className="md-docbar-spacer" />
+        <span className="md-docstats" title={`${text.split('\n').length} lines`}>
+          {flat.length} sections · {totalDiagrams} diagrams · {words.toLocaleString()} words
+        </span>
+        <div className="md-view-switch" role="group" aria-label="View">
+          {(['editor', 'split', 'preview'] as const).map((v) => (
+            <button key={v} className={view === v ? 'active' : ''} onClick={() => setView(v)} title={v === 'editor' ? 'Editor only' : v === 'split' ? 'Editor and preview' : 'Preview only'}>
+              {v === 'preview' ? 'Preview' : v === 'split' ? 'Split' : 'Write'}
+            </button>
+          ))}
+        </div>
+        <button className="file-action-btn" onClick={download} title="Download the Markdown file">⇣ .md</button>
+        <button className="file-action-btn" onClick={() => window.print()} title="Print or save as PDF">⎙</button>
       </div>
 
       <div className="workspace">
-        <aside className="file-panel md-outline-panel">
+        {outlineOpen && <aside className="file-panel md-outline-panel">
           <div className="file-panel-hd">Outline</div>
           <div className="md-outline-tools">
             <input
@@ -381,23 +432,9 @@ export default function MarkdownViewer({
             <span>Diagrams: click a node to trace it · double-click to zoom</span>
             <span>Underlined <code>code</code> is in a diagram: hover or click it</span>
           </div>
-        </aside>
+        </aside>}
 
         <div className="diff-panel">
-          <div className="diff-panel-hd">
-            <span className="diff-crumb">{flat.find((s) => s.id === active)?.title || flat[0]?.title || 'Document'}</span>
-            <div className="file-actions">
-              <div className="md-view-switch" role="group" aria-label="View">
-                {(['preview', 'split', 'editor'] as const).map((v) => (
-                  <button key={v} className={`file-action-btn${view === v ? ' active' : ''}`} onClick={() => setView(v)}>
-                    {v === 'preview' ? '👁 Preview' : v === 'split' ? '◫ Split' : '✎ Editor'}
-                  </button>
-                ))}
-              </div>
-              <button className="file-action-btn" onClick={download}>⇣ .md</button>
-              <button className="file-action-btn" onClick={() => window.print()}>⎙ Print</button>
-            </div>
-          </div>
           <div className={`md-split md-view-${view}`}>
             {editing && (
               <Suspense fallback={<div className="md-editor md-diagram-loading">Loading editor…</div>}>
@@ -407,6 +444,12 @@ export default function MarkdownViewer({
             {showPreview && <div className="diff-body md-doc-scroll" ref={docRef} onClick={onDocClick} onMouseOver={onDocOver} onMouseOut={onDocOut}>
               <DiagramLinks.Provider value={links}>
               <article className="md-doc">
+                {!text.trim() && (
+                  <div className="md-empty">
+                    <strong>Nothing to preview yet</strong>
+                    <span>Start typing in the editor, open a file, or drop a <code>.md</code> file anywhere on the page.</span>
+                  </div>
+                )}
                 <Body tokens={root.body} theme={theme} name="document" />
                 {root.children.map((c) => (
                   <Section key={c.id} sec={c} theme={theme} collapsed={collapsed} toggle={toggle} />

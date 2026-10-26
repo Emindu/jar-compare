@@ -17,8 +17,8 @@ import css from 'react-syntax-highlighter/dist/esm/languages/prism/css';
 import JSZip from 'jszip';
 import { parseJfr, type JfrResult } from './jfr';
 import Profiler from './Profiler';
-import MarkdownViewer from './Markdown';
-import sampleMd from './samples/ohlc-architecture.md?raw';
+import MarkdownWorkspace from './MarkdownWorkspace';
+import Dropzone from './Dropzone';
 import './index.css';
 
 SyntaxHighlighter.registerLanguage('java', java);
@@ -247,14 +247,11 @@ export default function App() {
   const [selectedType, setSelectedType] = useState<FileStatus | null>(null);
   const [fileContent1, setFileContent1] = useState('');
   const [fileContent2, setFileContent2] = useState('');
-  const [dragActive1, setDragActive1] = useState(false);
-  const [dragActive2, setDragActive2] = useState(false);
   const [expandingNested, setExpandingNested] = useState<string | null>(null); // nested archive being compared
   const [expandedNested, setExpandedNested] = useState<Set<string>>(new Set()); // nested archives already drilled into
 
   // decompile state
   const [srcJar, setSrcJar] = useState<File | null>(null);
-  const [dragActiveD, setDragActiveD] = useState(false);
   const [decompiled, setDecompiled] = useState<Record<string, DecompiledFile> | null>(null);
   const [decompiledMeta, setDecompiledMeta] = useState<JarMeta | null>(null);
   const [selectedSource, setSelectedSource] = useState<string | null>(null);
@@ -268,14 +265,7 @@ export default function App() {
 
   // profile (JFR) state
   const [jfrFile, setJfrFile] = useState<File | null>(null);
-  const [dragActiveP, setDragActiveP] = useState(false);
   const [jfrResult, setJfrResult] = useState<JfrResult | null>(null);
-
-  // markdown viewer state
-  const [mdName, setMdName] = useState('');
-  const [mdDraft, setMdDraft] = useState('');
-  const [mdText, setMdText] = useState<string | null>(null);
-  const [dragActiveM, setDragActiveM] = useState(false);
 
   // IDE navigation: history, quick-open, outline, toast
   const [nav, setNav] = useState<{ stack: string[]; index: number }>({ stack: [], index: -1 });
@@ -435,9 +425,6 @@ export default function App() {
     setSourceQuery('');
     setJfrFile(null);
     setJfrResult(null);
-    setMdName('');
-    setMdDraft('');
-    setMdText(null);
     setProgressText('');
     navRef.current = { stack: [], index: -1 };
     setNav({ stack: [], index: -1 });
@@ -456,30 +443,6 @@ export default function App() {
   const goHome = () => {
     resetAll();
     setMode('compare');
-  };
-
-  const handleDrag = (e: React.DragEvent, set: (v: boolean) => void) => {
-    e.preventDefault();
-    e.stopPropagation();
-    set(e.type === 'dragenter' || e.type === 'dragover');
-  };
-
-  const handleDrop = (
-    e: React.DragEvent,
-    setFile: (f: File | null) => void,
-    setActive: (v: boolean) => void,
-    exts: string | string[] = '.jar',
-  ) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setActive(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file) {
-      const name = file.name.toLowerCase();
-      const ok = Array.isArray(exts) ? exts.some(x => name.endsWith(x)) : name.endsWith(exts);
-      if (ok) setFile(file);
-      else alert(`Please drop a valid ${Array.isArray(exts) ? exts.join(' or ') : exts} file`);
-    }
   };
 
   useEffect(() => {
@@ -756,25 +719,6 @@ export default function App() {
       setIsProcessing(false);
       setProgressText('');
     }
-  };
-
-  const loadMdFile = async (f: File | null | undefined) => {
-    if (!f) return;
-    setMdName(f.name);
-    setMdDraft(await f.text());
-  };
-
-  const onMdDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragActiveM(false);
-    loadMdFile(e.dataTransfer.files?.[0]);
-  };
-
-  const openMarkdown = (text = mdDraft, name = mdName) => {
-    if (!text.trim()) return;
-    setMdName(name || 'Untitled.md');
-    setMdText(text);
   };
 
   const downloadZip = async () => {
@@ -1324,7 +1268,8 @@ export default function App() {
     });
   };
 
-  const hasResults = !!diffResult || !!decompiled || !!jfrResult || mdText !== null;
+  // The Markdown tab is a workspace from the start (no upload step).
+  const hasResults = !!diffResult || !!decompiled || !!jfrResult || mode === 'markdown';
 
   return (
     <div className={`app${hasResults ? ' has-results' : ''}`}>
@@ -1336,7 +1281,7 @@ export default function App() {
             <span className="navbar-title">jar-compare</span>
           </button>
 
-          {!hasResults && (
+          {(!hasResults || mode === 'markdown') && (
             <div className="mode-tabs">
               <button className={`mode-tab${mode === 'compare' ? ' active' : ''}`} onClick={() => switchMode('compare')}>Compare</button>
               <button className={`mode-tab${mode === 'decompile' ? ' active' : ''}`} onClick={() => switchMode('decompile')}>Decompile</button>
@@ -1364,24 +1309,18 @@ export default function App() {
               <span className="jar-arrow">📊 profile</span>
             </div>
           )}
-          {mdText !== null && (
-            <div className="navbar-jars">
-              <span className="jar-pill">{mdName}</span>
-              <span className="jar-arrow">📝 markdown</span>
-            </div>
-          )}
         </div>
 
         <div className="navbar-right">
           {decompiled && (
             <button className="btn btn-primary btn-sm" onClick={downloadZip}>⇣ Download .zip</button>
           )}
-          {hasResults && (
+          {hasResults && mode !== 'markdown' && (
             <button className="btn btn-ghost" onClick={resetAll}>
               {mode === 'compare' ? 'New comparison' : 'New file'}
             </button>
           )}
-          {hasResults && (
+          {hasResults && mode !== 'markdown' && (
             <button className="btn btn-icon" onClick={goHome} title="Home">⌂</button>
           )}
           <button className="btn btn-icon" onClick={toggleTheme} title="Toggle theme">
@@ -1390,57 +1329,77 @@ export default function App() {
         </div>
       </nav>
 
-      {/* ── Upload page: COMPARE ─────────────────── */}
-      {mode === 'compare' && !diffResult && (
+      {/* ── Upload pages ─────────────────────────── */}
+      {!hasResults && (
         <main className="upload-page">
-          <div className="upload-card">
-            <div className="upload-heading">
-              <h1 className="upload-title">Compare JAR / WAR / EAR files</h1>
-              <p className="upload-sub">Side-by-side diff of classes, resources &amp; nested JARs — runs entirely in your browser</p>
-            </div>
+          <div className="hero">
+            <span className="hero-eyebrow">Free · No sign-up · Files never leave your device</span>
+            {mode === 'compare' && (
+              <>
+                <h1 className="hero-title">Compare <span className="hero-accent">JAR, WAR &amp; EAR</span> files</h1>
+                <p className="hero-sub">See exactly what changed between two builds: added, removed and modified classes, resources and nested JARs, with a side-by-side Java source diff.</p>
+              </>
+            )}
+            {mode === 'decompile' && (
+              <>
+                <h1 className="hero-title">Decompile a <span className="hero-accent">Java archive</span></h1>
+                <p className="hero-sub">Turn a JAR, WAR or EAR back into readable Java source. Browse the package tree, then download everything as a <code>.zip</code>.</p>
+              </>
+            )}
+            {mode === 'profile' && (
+              <>
+                <h1 className="hero-title">Analyze a <span className="hero-accent">JFR recording</span></h1>
+                <p className="hero-sub">Open a Java Flight Recorder <code>.jfr</code> file and explore CPU hot methods and an interactive flame graph.</p>
+              </>
+            )}
+          </div>
 
-            <div className="dropzone-row">
-              <div
-                className={`dropzone${dragActive1 ? ' drag-active' : ''}${jar1File ? ' has-file' : ''}`}
-                onDragEnter={e => handleDrag(e, setDragActive1)}
-                onDragOver={e  => handleDrag(e, setDragActive1)}
-                onDragLeave={e => handleDrag(e, setDragActive1)}
-                onDrop={e => handleDrop(e, setJar1File, setDragActive1, ['.jar', '.war', '.ear'])}
-              >
-                <label>
-                  <span className="dz-label">Original JAR / WAR / EAR</span>
-                  <span className={`dz-file${jar1File ? ' dz-file--set' : ''}`}>
-                    {jar1File ? jar1File.name : 'Drop .jar/.war/.ear or click to browse'}
-                  </span>
-                  {jar1File && <span className="dz-meta">{(jar1File.size / 1024 / 1024).toFixed(1)} MB</span>}
-                  <input type="file" accept=".jar,.war,.ear" onChange={e => setJar1File(e.target.files?.[0] || null)} />
-                </label>
+          <div className="tool-card">
+            {mode === 'compare' && (
+              <div className="dz-row">
+                <Dropzone label="Original" icon="📦" file={jar1File} onFile={setJar1File} accept={['.jar', '.war', '.ear']} />
+                <button
+                  className="dz-swap"
+                  onClick={() => { setJar1File(jar2File); setJar2File(jar1File); }}
+                  disabled={!jar1File && !jar2File}
+                  title="Swap original and new"
+                  aria-label="Swap files"
+                >⇄</button>
+                <Dropzone label="New" icon="📦" file={jar2File} onFile={setJar2File} accept={['.jar', '.war', '.ear']} />
               </div>
+            )}
+            {mode === 'decompile' && (
+              <Dropzone label="Archive to decompile" icon="🧩" file={srcJar} onFile={setSrcJar} accept={['.jar', '.war', '.ear']} />
+            )}
+            {mode === 'profile' && (
+              <Dropzone label="JFR recording" icon="📊" file={jfrFile} onFile={setJfrFile} accept={['.jfr']} />
+            )}
 
-              <div className="dz-divider">→</div>
-
-              <div
-                className={`dropzone${dragActive2 ? ' drag-active' : ''}${jar2File ? ' has-file' : ''}`}
-                onDragEnter={e => handleDrag(e, setDragActive2)}
-                onDragOver={e  => handleDrag(e, setDragActive2)}
-                onDragLeave={e => handleDrag(e, setDragActive2)}
-                onDrop={e => handleDrop(e, setJar2File, setDragActive2, ['.jar', '.war', '.ear'])}
-              >
-                <label>
-                  <span className="dz-label">New JAR / WAR / EAR</span>
-                  <span className={`dz-file${jar2File ? ' dz-file--set' : ''}`}>
-                    {jar2File ? jar2File.name : 'Drop .jar/.war/.ear or click to browse'}
-                  </span>
-                  {jar2File && <span className="dz-meta">{(jar2File.size / 1024 / 1024).toFixed(1)} MB</span>}
-                  <input type="file" accept=".jar,.war,.ear" onChange={e => setJar2File(e.target.files?.[0] || null)} />
-                </label>
-              </div>
-            </div>
-
-            <div className="upload-actions">
-              <button className="btn btn-primary" disabled={!jar1File || !jar2File || isProcessing} onClick={handleCompare}>
-                {isProcessing ? 'Analyzing…' : 'Compare JARs'}
-              </button>
+            <div className="tool-actions">
+              {mode === 'compare' && (
+                <button className="btn btn-primary btn-lg" disabled={!jar1File || !jar2File || isProcessing} onClick={handleCompare}>
+                  {isProcessing ? 'Analyzing…' : 'Compare files →'}
+                </button>
+              )}
+              {mode === 'decompile' && (
+                <button className="btn btn-primary btn-lg" disabled={!srcJar || isProcessing} onClick={handleDecompile}>
+                  {isProcessing ? 'Decompiling…' : 'Decompile & extract →'}
+                </button>
+              )}
+              {mode === 'profile' && (
+                <button className="btn btn-primary btn-lg" disabled={!jfrFile || isProcessing} onClick={handleProfile}>
+                  {isProcessing ? 'Parsing…' : 'Analyze recording →'}
+                </button>
+              )}
+              {!isProcessing && (
+                <span className="tool-hint">
+                  {mode === 'compare' && (!jar1File || !jar2File)
+                    ? `Add ${!jar1File && !jar2File ? 'both files' : 'one more file'} to compare`
+                    : mode === 'decompile' && !srcJar ? 'Add an archive to start'
+                    : mode === 'profile' && !jfrFile ? 'Add a .jfr file to start'
+                    : 'Ready'}
+                </span>
+              )}
             </div>
 
             {isProcessing && (
@@ -1450,142 +1409,13 @@ export default function App() {
               </div>
             )}
           </div>
-        </main>
-      )}
 
-      {/* ── Upload page: DECOMPILE ───────────────── */}
-      {mode === 'decompile' && !decompiled && (
-        <main className="upload-page">
-          <div className="upload-card">
-            <div className="upload-heading">
-              <h1 className="upload-title">Decompile a JAR / WAR / EAR</h1>
-              <p className="upload-sub">De-archive &amp; decompile bytecode back to Java source, then download it — all in your browser</p>
-            </div>
-
-            <div className="dropzone-row">
-              <div
-                className={`dropzone dropzone--single${dragActiveD ? ' drag-active' : ''}${srcJar ? ' has-file' : ''}`}
-                onDragEnter={e => handleDrag(e, setDragActiveD)}
-                onDragOver={e  => handleDrag(e, setDragActiveD)}
-                onDragLeave={e => handleDrag(e, setDragActiveD)}
-                onDrop={e => handleDrop(e, setSrcJar, setDragActiveD, ['.jar', '.war', '.ear'])}
-              >
-                <label>
-                  <span className="dz-label">JAR / WAR / EAR to decompile</span>
-                  <span className={`dz-file${srcJar ? ' dz-file--set' : ''}`}>
-                    {srcJar ? srcJar.name : 'Drop .jar/.war/.ear or click to browse'}
-                  </span>
-                  {srcJar && <span className="dz-meta">{(srcJar.size / 1024 / 1024).toFixed(1)} MB</span>}
-                  <input type="file" accept=".jar,.war,.ear" onChange={e => setSrcJar(e.target.files?.[0] || null)} />
-                </label>
-              </div>
-            </div>
-
-            <div className="upload-actions">
-              <button className="btn btn-primary" disabled={!srcJar || isProcessing} onClick={handleDecompile}>
-                {isProcessing ? 'Decompiling…' : 'Decompile & Extract'}
-              </button>
-            </div>
-
-            {isProcessing && (
-              <div className="progress-wrap">
-                <div className="progress-track"><div className="progress-bar" /></div>
-                <div className="progress-text">{progressText || 'Working…'}</div>
-              </div>
-            )}
-          </div>
-        </main>
-      )}
-
-      {/* ── Upload page: PROFILE (JFR) ───────────── */}
-      {mode === 'profile' && !jfrResult && (
-        <main className="upload-page">
-          <div className="upload-card">
-            <div className="upload-heading">
-              <h1 className="upload-title">Analyze a JFR recording</h1>
-              <p className="upload-sub">Open a Java Flight Recorder <code>.jfr</code> file and explore a flame graph &amp; hot methods — parsed entirely in your browser</p>
-            </div>
-
-            <div className="dropzone-row">
-              <div
-                className={`dropzone dropzone--single${dragActiveP ? ' drag-active' : ''}${jfrFile ? ' has-file' : ''}`}
-                onDragEnter={e => handleDrag(e, setDragActiveP)}
-                onDragOver={e  => handleDrag(e, setDragActiveP)}
-                onDragLeave={e => handleDrag(e, setDragActiveP)}
-                onDrop={e => handleDrop(e, setJfrFile, setDragActiveP, '.jfr')}
-              >
-                <label>
-                  <span className="dz-label">JFR recording</span>
-                  <span className={`dz-file${jfrFile ? ' dz-file--set' : ''}`}>
-                    {jfrFile ? jfrFile.name : 'Drop .jfr or click to browse'}
-                  </span>
-                  {jfrFile && <span className="dz-meta">{(jfrFile.size / 1024 / 1024).toFixed(1)} MB</span>}
-                  <input type="file" accept=".jfr" onChange={e => setJfrFile(e.target.files?.[0] || null)} />
-                </label>
-              </div>
-            </div>
-
-            <div className="upload-actions">
-              <button className="btn btn-primary" disabled={!jfrFile || isProcessing} onClick={handleProfile}>
-                {isProcessing ? 'Parsing…' : 'Analyze recording'}
-              </button>
-            </div>
-
-            {isProcessing && (
-              <div className="progress-wrap">
-                <div className="progress-track"><div className="progress-bar" /></div>
-                <div className="progress-text">{progressText || 'Working…'}</div>
-              </div>
-            )}
-          </div>
-        </main>
-      )}
-
-      {/* ── Upload page: MARKDOWN ────────────────── */}
-      {mode === 'markdown' && mdText === null && (
-        <main className="upload-page">
-          <div className="upload-card">
-            <div className="upload-heading">
-              <h1 className="upload-title">Visualize a Markdown file</h1>
-              <p className="upload-sub">Open a <code>.md</code> file or paste Markdown to browse it by section, with Mermaid diagrams rendered inline — all in your browser</p>
-            </div>
-
-            <div className="dropzone-row">
-              <div
-                className={`dropzone dropzone--single${dragActiveM ? ' drag-active' : ''}${mdName ? ' has-file' : ''}`}
-                onDragEnter={e => handleDrag(e, setDragActiveM)}
-                onDragOver={e  => handleDrag(e, setDragActiveM)}
-                onDragLeave={e => handleDrag(e, setDragActiveM)}
-                onDrop={onMdDrop}
-              >
-                <label>
-                  <span className="dz-label">Markdown file</span>
-                  <span className={`dz-file${mdName ? ' dz-file--set' : ''}`}>
-                    {mdName || 'Drop .md or click to browse'}
-                  </span>
-                  {mdName && <span className="dz-meta">{(mdDraft.length / 1024).toFixed(1)} KB</span>}
-                  <input type="file" accept=".md,.markdown,.mdx,.txt,text/markdown" onChange={e => loadMdFile(e.target.files?.[0])} />
-                </label>
-              </div>
-            </div>
-
-            <textarea
-              className="md-paste"
-              placeholder="…or paste Markdown here"
-              value={mdDraft}
-              onChange={e => { setMdDraft(e.target.value); if (!e.target.value) setMdName(''); }}
-              spellCheck={false}
-            />
-
-            <div className="upload-actions">
-              <button className="btn btn-primary" disabled={!mdDraft.trim()} onClick={() => openMarkdown()}>
-                View document
-              </button>
-              <button className="btn btn-ghost" onClick={() => openMarkdown(sampleMd, 'ohlc-architecture.md')}>
-                Try a sample
-              </button>
-            </div>
-          </div>
+          <ul className="trust-row">
+            <li><span>🔒</span> Processed locally in your browser</li>
+            <li><span>☕</span> Real JVM via WebAssembly</li>
+            <li><span>🧩</span> CFR decompiler</li>
+            <li><span>🪆</span> Nested &amp; fat JARs</li>
+          </ul>
         </main>
       )}
 
@@ -1596,88 +1426,82 @@ export default function App() {
             <div className="landing-inner">
 
               <div className="lc-block">
-                <h2 className="lc-h2">How to compare two JAR files</h2>
+                <span className="lc-eyebrow">How it works</span>
+                <h2 className="lc-h2">Compare two JAR files in three steps</h2>
                 <ol className="steps">
                   <li>
                     <span className="step-n">1</span>
-                    <div>
-                      <strong>Choose two JARs</strong>
-                      <p>Drag &amp; drop your original and updated <code>.jar</code> files into the two drop zones, or click to browse.</p>
-                    </div>
+                    <strong>Choose two JARs</strong>
+                    <p>Drag &amp; drop your original and updated <code>.jar</code> files into the two drop zones, or click to browse.</p>
                   </li>
                   <li>
                     <span className="step-n">2</span>
-                    <div>
-                      <strong>Run the comparison</strong>
-                      <p>Hit <em>Compare JARs</em>. Every entry is hashed and matched to find added, removed and modified files — including JARs nested inside JARs.</p>
-                    </div>
+                    <strong>Run the comparison</strong>
+                    <p>Every entry is hashed and matched to find added, removed and modified files, including JARs nested inside JARs.</p>
                   </li>
                   <li>
                     <span className="step-n">3</span>
-                    <div>
-                      <strong>Review the diff</strong>
-                      <p>Changed classes are decompiled and shown as a side-by-side Java source diff, so you see real code changes — not just bytecode.</p>
-                    </div>
+                    <strong>Review the diff</strong>
+                    <p>Changed classes are decompiled and shown as a side-by-side Java source diff, so you see real code changes, not bytecode.</p>
                   </li>
                 </ol>
               </div>
 
               <div className="lc-block">
-                <h2 className="lc-h2">How to decompile a JAR file</h2>
+                <span className="lc-eyebrow">Decompile</span>
+                <h2 className="lc-h2">Get the source back from any JAR</h2>
                 <ol className="steps">
                   <li>
                     <span className="step-n">1</span>
-                    <div>
-                      <strong>Switch to Decompile</strong>
-                      <p>Pick the <em>Decompile</em> tab and drop in a single <code>.jar</code> file.</p>
-                    </div>
+                    <strong>Switch to Decompile</strong>
+                    <p>Pick the <em>Decompile</em> tab and drop in a single <code>.jar</code>, <code>.war</code> or <code>.ear</code> file.</p>
                   </li>
                   <li>
                     <span className="step-n">2</span>
-                    <div>
-                      <strong>Decompile &amp; extract</strong>
-                      <p>The whole archive is decompiled to readable Java source with the CFR decompiler, and every resource is extracted.</p>
-                    </div>
+                    <strong>Decompile &amp; extract</strong>
+                    <p>The whole archive is decompiled to readable Java with the CFR decompiler, and every resource is extracted.</p>
                   </li>
                   <li>
                     <span className="step-n">3</span>
-                    <div>
-                      <strong>Browse &amp; download</strong>
-                      <p>Explore sources in a package tree with syntax highlighting, then download everything as a <code>.zip</code>.</p>
-                    </div>
+                    <strong>Browse &amp; download</strong>
+                    <p>Explore sources in a package tree with syntax highlighting, then download everything as a <code>.zip</code>.</p>
                   </li>
                 </ol>
               </div>
 
               <div className="lc-block">
-                <h2 className="lc-h2">Features</h2>
+                <span className="lc-eyebrow">Features</span>
+                <h2 className="lc-h2">Everything you need to inspect Java builds</h2>
                 <div className="feature-grid">
-                  <div className="feature-card"><h3>📦 Compare JAR files</h3><p>Class-by-class diff of two Java JARs with added / removed / modified detection.</p></div>
-                  <div className="feature-card"><h3>🔍 Source-level diffs</h3><p>Changed <code>.class</code> files are decompiled so you read Java, not bytecode.</p></div>
-                  <div className="feature-card"><h3>🪆 Nested JARs</h3><p>Recurses into JARs packaged inside JARs, like Spring Boot fat JARs.</p></div>
-                  <div className="feature-card"><h3>🧩 Decompile to source</h3><p>Turn any JAR back into a browsable, downloadable Java source tree.</p></div>
-                  <div className="feature-card"><h3>📊 JFR flame graphs</h3><p>Open a Java Flight Recorder <code>.jfr</code> file and explore CPU hot methods as an interactive flame graph.</p></div>
-                  <div className="feature-card"><h3>🔒 100% private</h3><p>Your JARs never leave your machine — everything runs in the browser.</p></div>
-                  <div className="feature-card"><h3>⚡ No install, free</h3><p>No account, no upload, no setup. Open the page and go.</p></div>
+                  <div className="feature-card"><span className="feature-icon">📦</span><h3>Compare archives</h3><p>Class-by-class diff of two JAR, WAR or EAR files with added, removed and modified detection.</p></div>
+                  <div className="feature-card"><span className="feature-icon">🔍</span><h3>Source-level diffs</h3><p>Changed <code>.class</code> files are decompiled so you read Java, not bytecode.</p></div>
+                  <div className="feature-card"><span className="feature-icon">🪆</span><h3>Nested JARs</h3><p>Recurses into JARs packaged inside JARs, like Spring Boot fat JARs.</p></div>
+                  <div className="feature-card"><span className="feature-icon">🧩</span><h3>Decompile to source</h3><p>Turn any archive back into a browsable, downloadable Java source tree.</p></div>
+                  <div className="feature-card"><span className="feature-icon">📊</span><h3>JFR flame graphs</h3><p>Open a Java Flight Recorder file and explore CPU hot methods as an interactive flame graph.</p></div>
+                  <div className="feature-card"><span className="feature-icon">📝</span><h3>Markdown editor</h3><p>Write and preview Markdown with an outline, live Mermaid diagrams and export.</p></div>
+                </div>
+              </div>
+
+              <div className="lc-block privacy-band">
+                <span className="privacy-icon" aria-hidden>🔒</span>
+                <div>
+                  <h2 className="lc-h2">Runs entirely in your browser</h2>
+                  <p className="lc-prose">
+                    JAR Compare runs a real Java Virtual Machine compiled to <strong>WebAssembly</strong> (via CheerpJ)
+                    right inside your browser tab. Your <code>.jar</code> files are <strong>never uploaded</strong> to
+                    a server: comparison and decompilation happen locally, keeping proprietary code private. Decompilation is
+                    powered by the <strong>CFR</strong> decompiler, the same engine used in the diff view.
+                  </p>
                 </div>
               </div>
 
               <div className="lc-block">
-                <h2 className="lc-h2">Runs entirely in your browser</h2>
-                <p className="lc-prose">
-                  JAR Compare runs a real Java Virtual Machine compiled to <strong>WebAssembly</strong> (via CheerpJ)
-                  right inside your browser tab. That means your <code>.jar</code> files are <strong>never uploaded</strong> to
-                  a server — comparison and decompilation happen locally, keeping proprietary code private. Decompilation is
-                  powered by the <strong>CFR</strong> decompiler, the same engine used in the diff view.
-                </p>
-              </div>
-
-              <div className="lc-block">
+                <span className="lc-eyebrow">FAQ</span>
                 <h2 className="lc-h2">Frequently asked questions</h2>
                 <div className="faq">
                   <details>
                     <summary>Is JAR Compare free?</summary>
-                    <p>Yes — it's completely free, with no account or sign-up required.</p>
+                    <p>Yes, it's completely free, with no account or sign-up required.</p>
                   </details>
                   <details>
                     <summary>Are my JAR files uploaded anywhere?</summary>
@@ -1702,7 +1526,8 @@ export default function App() {
           </section>
 
           <footer className="site-footer">
-            <span>JAR Compare — compare &amp; decompile Java JAR files, free and in your browser.</span>
+            <span className="site-footer-brand">⬡ jar-compare</span>
+            <span>Compare &amp; decompile Java archives, free and in your browser.</span>
             <a href="https://github.com/Emindu/jar-compare" target="_blank" rel="noopener noreferrer">View on GitHub ↗</a>
           </footer>
         </>
@@ -2012,7 +1837,7 @@ export default function App() {
       {jfrResult && <Profiler result={jfrResult} />}
 
       {/* ── Results: MARKDOWN ────────────────────── */}
-      {mdText !== null && <MarkdownViewer text={mdText} theme={theme} onChange={setMdText} />}
+      {mode === 'markdown' && <MarkdownWorkspace theme={theme} />}
 
       {/* ── Quick Open (Ctrl/Cmd+P) ── */}
       {quickOpen && (
