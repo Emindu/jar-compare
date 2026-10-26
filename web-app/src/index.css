@@ -1415,19 +1415,60 @@ body {
 
 .md-split { flex: 1; display: flex; min-height: 0; }
 .md-editor {
-  width: 42%;
+  width: 50%;
   flex-shrink: 0;
-  border: none;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
   border-right: 1px solid var(--border);
   background: var(--surface);
-  color: var(--text);
-  padding: 1rem 1.1rem;
-  font-family: var(--font-mono);
-  font-size: 0.8rem;
-  line-height: 1.55;
-  resize: none;
 }
-.md-editor:focus { outline: none; }
+.md-view-editor .md-editor { width: 100%; border-right: none; }
+.md-cm { flex: 1; min-height: 0; overflow: hidden; }
+.md-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px;
+  padding: 0.3rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.md-tool {
+  min-width: 28px;
+  height: 26px;
+  padding: 0 6px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: var(--text-muted);
+  font-family: var(--font-sans);
+  font-size: 0.78rem;
+  cursor: pointer;
+}
+.md-tool:hover { background: var(--surface-2); color: var(--text); border-color: var(--border); }
+.md-tool-b { font-weight: 800; }
+.md-tool-i { font-style: italic; font-family: Georgia, serif; }
+.md-tool-s { text-decoration: line-through; }
+.md-tool-sep { width: 1px; height: 16px; background: var(--border); margin: 0 4px; }
+.md-editor-status {
+  display: flex;
+  gap: 1rem;
+  padding: 0.25rem 0.75rem;
+  border-top: 1px solid var(--border);
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+.md-editor-hint { margin-left: auto; }
+.md-editor-hint kbd {
+  font-family: var(--font-mono);
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 4px;
+}
+.md-view-switch { display: flex; gap: 2px; }
 .md-doc-scroll { scroll-behavior: smooth; }
 
 .md-doc {
@@ -1577,8 +1618,10 @@ h6.md-heading { color: var(--text-muted); }
 @media (max-width: 760px) {
   .md-outline-panel { display: none; }
   .md-doc { padding: 1rem 1rem 3rem 1.6rem; }
-  .md-split.editing { flex-direction: column; }
-  .md-editor { width: 100%; height: 40%; border-right: none; border-bottom: 1px solid var(--border); }
+  .md-view-split { flex-direction: column; }
+  .md-view-editor .md-editor { height: 100%; }
+  .md-editor { width: 100%; height: 50%; border-right: none; border-bottom: 1px solid var(--border); }
+  .md-editor-hint { display: none; }
 }
 
 @media print {

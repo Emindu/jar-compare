@@ -1,8 +1,12 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
 import { marked, type Token, type Tokens } from 'marked';
 import DOMPurify from 'dompurify';
 import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight, oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
+import type { MdEditorHandle } from './MdEditor';
+
+// CodeMirror is sizeable; only load it when the editor is opened.
+const MdEditor = lazy(() => import('./MdEditor'));
 
 // Markdown results view: an outline of the document's sections (left) and the
 // rendered document (right). The document is split into a tree of sections by
@@ -100,11 +104,20 @@ function renderMermaid(src: string, theme: Theme): Promise<string> {
         securityLevel: 'strict',
         theme: theme === 'dark' ? 'dark' : 'default',
         fontFamily: 'var(--font-sans)',
+        // Errors are shown in our own block; don't let mermaid append its own to <body>.
+        suppressErrorRendering: true,
       });
       mermaidTheme = theme;
     }
-    const { svg } = await mermaid.render(`mmd-${++renderSeq}`, src);
-    return svg;
+    const id = `mmd-${++renderSeq}`;
+    try {
+      await mermaid.parse(src);
+      const { svg } = await mermaid.render(id, src);
+      return svg;
+    } finally {
+      // A failed render can leave its scratch container behind.
+      document.getElementById(`d${id}`)?.remove();
+    }
   });
   renderQueue = job.catch(() => undefined);
   return job;
@@ -335,7 +348,10 @@ export default function MarkdownViewer({
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [active, setActive] = useState('');
   const [filter, setFilter] = useState('');
-  const [editing, setEditing] = useState(false);
+  const [view, setView] = useState<'preview' | 'split' | 'editor'>('preview');
+  const editing = view !== 'preview';
+  const showPreview = view !== 'editor';
+  const editorRef = useRef<MdEditorHandle>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const docRef = useRef<HTMLDivElement>(null);
 
@@ -364,9 +380,9 @@ export default function MarkdownViewer({
     onScroll();
     el.addEventListener('scroll', onScroll, { passive: true });
     return () => el.removeEventListener('scroll', onScroll);
-  }, [flat, collapsed, editing]);
+  }, [flat, collapsed, view]);
 
-  const goTo = (id: string) => {
+  const goTo = (id: string, fromEditor = false) => {
     // Expand any collapsed ancestor so the target is visible.
     const idx = flat.findIndex((s) => s.id === id);
     if (idx < 0) return;
@@ -382,9 +398,16 @@ export default function MarkdownViewer({
         return next;
       });
     }
+    if (!fromEditor) editorRef.current?.revealHeading(idx);
     requestAnimationFrame(() => {
       document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
+  };
+
+  // Editor cursor moved into another section → follow it in the preview.
+  const onEditorHeading = (idx: number) => {
+    if (idx >= 0 && flat[idx]) goTo(flat[idx].id, true);
+    else docRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   // In-document anchor links scroll inside the viewer instead of changing the URL.
@@ -466,30 +489,31 @@ export default function MarkdownViewer({
           <div className="diff-panel-hd">
             <span className="diff-crumb">{flat.find((s) => s.id === active)?.title || flat[0]?.title || 'Document'}</span>
             <div className="file-actions">
-              <button className={`file-action-btn${editing ? ' active' : ''}`} onClick={() => setEditing((v) => !v)}>
-                {editing ? '✓ Done editing' : '✎ Edit'}
-              </button>
+              <div className="md-view-switch" role="group" aria-label="View">
+                {(['preview', 'split', 'editor'] as const).map((v) => (
+                  <button key={v} className={`file-action-btn${view === v ? ' active' : ''}`} onClick={() => setView(v)}>
+                    {v === 'preview' ? '👁 Preview' : v === 'split' ? '◫ Split' : '✎ Editor'}
+                  </button>
+                ))}
+              </div>
               <button className="file-action-btn" onClick={download}>⇣ .md</button>
               <button className="file-action-btn" onClick={() => window.print()}>⎙ Print</button>
             </div>
           </div>
-          <div className={`md-split${editing ? ' editing' : ''}`}>
+          <div className={`md-split md-view-${view}`}>
             {editing && (
-              <textarea
-                className="md-editor"
-                value={text}
-                onChange={(e) => onChange(e.target.value)}
-                spellCheck={false}
-              />
+              <Suspense fallback={<div className="md-editor md-diagram-loading">Loading editor…</div>}>
+                <MdEditor ref={editorRef} value={text} onChange={onChange} onHeading={onEditorHeading} />
+              </Suspense>
             )}
-            <div className="diff-body md-doc-scroll" ref={docRef} onClick={onDocClick}>
+            {showPreview && <div className="diff-body md-doc-scroll" ref={docRef} onClick={onDocClick}>
               <article className="md-doc">
                 <Body tokens={root.body} theme={theme} onExpand={setExpanded} />
                 {root.children.map((c) => (
                   <Section key={c.id} sec={c} theme={theme} collapsed={collapsed} toggle={toggle} onExpand={setExpanded} />
                 ))}
               </article>
-            </div>
+            </div>}
           </div>
         </div>
       </div>
