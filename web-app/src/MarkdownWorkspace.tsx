@@ -87,7 +87,6 @@ export default function MarkdownWorkspace({ theme }: { theme: 'light' | 'dark' }
 
   const controls = (
     <>
-      <span className="md-doc-icon" aria-hidden>📄</span>
       <input
         className="md-doc-name"
         value={nameDraft ?? doc.name}
@@ -107,8 +106,8 @@ export default function MarkdownWorkspace({ theme }: { theme: 'light' | 'dark' }
         {saved === 'saved' ? 'Saved in this browser' : saved === 'saving' ? 'Saving…' : 'Not saved'}
       </span>
       <span className="md-docbar-sep" />
-      <button className="file-action-btn" onClick={newDoc}>＋ New</button>
-      <button className="file-action-btn" onClick={() => fileRef.current?.click()}>📂 Open…</button>
+      <button className="file-action-btn" onClick={newDoc}>New</button>
+      <button className="file-action-btn" onClick={() => fileRef.current?.click()}>Open…</button>
       <span className="dg-export">
         <button className="file-action-btn" onClick={() => setSamplesOpen((v) => !v)} aria-expanded={samplesOpen}>Samples ▾</button>
         {samplesOpen && (
@@ -154,7 +153,6 @@ export default function MarkdownWorkspace({ theme }: { theme: 'light' | 'dark' }
       {dragging && (
         <div className="md-drop-overlay">
           <div className="md-drop-card">
-            <span>📄</span>
             <strong>Drop to open</strong>
             <small>.md, .markdown or .txt</small>
           </div>

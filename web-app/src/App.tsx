@@ -18,7 +18,7 @@ import JSZip from 'jszip';
 import { parseJfr, type JfrResult } from './jfr';
 import Profiler from './Profiler';
 import MarkdownWorkspace from './MarkdownWorkspace';
-import Dropzone from './Dropzone';
+import Intake from './Intake';
 import './index.css';
 
 SyntaxHighlighter.registerLanguage('java', java);
@@ -225,6 +225,40 @@ function mergeNestedDiff(prev: DiffResult, pfx: string, sub: DiffResult): DiffRe
     modifiedNested:         [...prev.modifiedNested, ...(sub.modifiedNested || []).map(s => pfx + s)],
     contents,
   };
+}
+
+// How-to procedures shown on the start page; the active tab's comes first.
+const PROCEDURES: Record<'compare' | 'decompile' | 'profile', { title: string; steps: { key: string; text: React.ReactNode }[] }> = {
+  compare: {
+    title: 'How to compare two JAR files',
+    steps: [
+      { key: 'Load', text: <>Put the original build in <var>a/</var> and the new one in <var>b/</var>: drag them in, or click a row to choose a file.</> },
+      { key: 'Diff', text: <>Entries are hashed and matched by path. Archives nested inside, such as <code>BOOT-INF/lib</code> or <code>WEB-INF/lib</code>, are opened and compared too.</> },
+      { key: 'Read', text: <>Modified classes are decompiled and shown side by side, so the change reads as Java rather than bytecode.</> },
+    ],
+  },
+  decompile: {
+    title: 'How to decompile a JAR file',
+    steps: [
+      { key: 'Switch', text: <>Open the <em>Decompile</em> tab and load a single <code>.jar</code>, <code>.war</code> or <code>.ear</code>.</> },
+      { key: 'Extract', text: <>Every class goes through the CFR decompiler; resources are copied out unchanged.</> },
+      { key: 'Keep', text: <>Browse the package tree with syntax highlighting, then download the whole tree as a <code>.zip</code>.</> },
+    ],
+  },
+  profile: {
+    title: 'How to analyze a JFR recording',
+    steps: [
+      { key: 'Record', text: <>Start the JVM with <code>-XX:StartFlightRecording=duration=60s,filename=app.jfr,settings=profile</code>, or attach later with <code>jcmd &lt;pid&gt; JFR.start</code>.</> },
+      { key: 'Open', text: <>Load the <code>.jfr</code> file on the <em>Profile</em> tab. It is parsed in the page; nothing is sent anywhere.</> },
+      { key: 'Read', text: <>Sort hot methods by self or total samples, and click one to find it in the flame graph.</> },
+    ],
+  },
+};
+
+function procedureOrder(mode: Mode): ('compare' | 'decompile' | 'profile')[] {
+  const all = ['compare', 'decompile', 'profile'] as const;
+  const first = mode === 'decompile' || mode === 'profile' ? mode : 'compare';
+  return [first, ...all.filter((k) => k !== first)];
 }
 
 export default function App() {
@@ -1277,7 +1311,7 @@ export default function App() {
       <nav className="navbar">
         <div className="navbar-left">
           <button className="navbar-brand" onClick={goHome} title="Back to home">
-            <span className="navbar-logo">⬡</span>
+            <span className="navbar-mark" aria-hidden />
             <span className="navbar-title">jar-compare</span>
           </button>
 
@@ -1306,7 +1340,7 @@ export default function App() {
           {jfrResult && jfrFile && (
             <div className="navbar-jars">
               <span className="jar-pill">{jfrFile.name}</span>
-              <span className="jar-arrow">📊 profile</span>
+              <span className="jar-arrow">profile</span>
             </div>
           )}
         </div>
@@ -1321,216 +1355,167 @@ export default function App() {
             </button>
           )}
           {hasResults && mode !== 'markdown' && (
-            <button className="btn btn-icon" onClick={goHome} title="Home">⌂</button>
+            <button className="btn btn-icon" onClick={goHome} title="Back to the start page">Home</button>
           )}
-          <button className="btn btn-icon" onClick={toggleTheme} title="Toggle theme">
-            {theme === 'dark' ? '☀' : '☾'}
+          <button className="btn btn-icon navbar-theme" onClick={toggleTheme} title="Toggle theme" aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}>
+            {theme === 'dark' ? 'Light' : 'Dark'}
           </button>
         </div>
       </nav>
 
-      {/* ── Upload pages ─────────────────────────── */}
+      {/* ── Home: intake + datasheet ─────────────── */}
       {!hasResults && (
-        <main className="upload-page">
-          <div className="hero">
-            <span className="hero-eyebrow">Free · No sign-up · Files never leave your device</span>
-            {mode === 'compare' && (
-              <>
-                <h1 className="hero-title">Compare <span className="hero-accent">JAR, WAR &amp; EAR</span> files</h1>
-                <p className="hero-sub">See exactly what changed between two builds: added, removed and modified classes, resources and nested JARs, with a side-by-side Java source diff.</p>
-              </>
-            )}
-            {mode === 'decompile' && (
-              <>
-                <h1 className="hero-title">Decompile a <span className="hero-accent">Java archive</span></h1>
-                <p className="hero-sub">Turn a JAR, WAR or EAR back into readable Java source. Browse the package tree, then download everything as a <code>.zip</code>.</p>
-              </>
-            )}
-            {mode === 'profile' && (
-              <>
-                <h1 className="hero-title">Analyze a <span className="hero-accent">JFR recording</span></h1>
-                <p className="hero-sub">Open a Java Flight Recorder <code>.jfr</code> file and explore CPU hot methods and an interactive flame graph.</p>
-              </>
-            )}
-          </div>
-
-          <div className="tool-card">
-            {mode === 'compare' && (
-              <div className="dz-row">
-                <Dropzone label="Original" icon="📦" file={jar1File} onFile={setJar1File} accept={['.jar', '.war', '.ear']} />
-                <button
-                  className="dz-swap"
-                  onClick={() => { setJar1File(jar2File); setJar2File(jar1File); }}
-                  disabled={!jar1File && !jar2File}
-                  title="Swap original and new"
-                  aria-label="Swap files"
-                >⇄</button>
-                <Dropzone label="New" icon="📦" file={jar2File} onFile={setJar2File} accept={['.jar', '.war', '.ear']} />
-              </div>
-            )}
-            {mode === 'decompile' && (
-              <Dropzone label="Archive to decompile" icon="🧩" file={srcJar} onFile={setSrcJar} accept={['.jar', '.war', '.ear']} />
-            )}
-            {mode === 'profile' && (
-              <Dropzone label="JFR recording" icon="📊" file={jfrFile} onFile={setJfrFile} accept={['.jfr']} />
-            )}
-
-            <div className="tool-actions">
+        <div className="home">
+          <main className="home-hero">
+            <div className="hero-copy">
+              <p className="hero-meta">
+                {mode === 'profile' ? '.jfr' : 'jar · war · ear'}
+                <span>runs in this tab</span>
+                <span>nothing is uploaded</span>
+              </p>
               {mode === 'compare' && (
-                <button className="btn btn-primary btn-lg" disabled={!jar1File || !jar2File || isProcessing} onClick={handleCompare}>
-                  {isProcessing ? 'Analyzing…' : 'Compare files →'}
-                </button>
+                <>
+                  <h1 className="hero-title"><span>Diff two</span> <span>Java builds.</span></h1>
+                  <p className="hero-lede">Drop the old and the new archive. Every entry is hashed and matched, changed classes are decompiled, and you read the difference as Java source.</p>
+                </>
               )}
               {mode === 'decompile' && (
-                <button className="btn btn-primary btn-lg" disabled={!srcJar || isProcessing} onClick={handleDecompile}>
-                  {isProcessing ? 'Decompiling…' : 'Decompile & extract →'}
-                </button>
+                <>
+                  <h1 className="hero-title"><span>Read the source</span> <span>of any JAR.</span></h1>
+                  <p className="hero-lede">CFR turns the bytecode back into Java and every resource is extracted alongside it. Browse the package tree, then take it all as a <code>.zip</code>.</p>
+                </>
               )}
               {mode === 'profile' && (
-                <button className="btn btn-primary btn-lg" disabled={!jfrFile || isProcessing} onClick={handleProfile}>
-                  {isProcessing ? 'Parsing…' : 'Analyze recording →'}
-                </button>
-              )}
-              {!isProcessing && (
-                <span className="tool-hint">
-                  {mode === 'compare' && (!jar1File || !jar2File)
-                    ? `Add ${!jar1File && !jar2File ? 'both files' : 'one more file'} to compare`
-                    : mode === 'decompile' && !srcJar ? 'Add an archive to start'
-                    : mode === 'profile' && !jfrFile ? 'Add a .jfr file to start'
-                    : 'Ready'}
-                </span>
+                <>
+                  <h1 className="hero-title"><span>See where the</span> <span>JVM spends its time.</span></h1>
+                  <p className="hero-lede">Open a Flight Recorder file. CPU samples become a hot-method table and a flame graph you can search.</p>
+                </>
               )}
             </div>
 
-            {isProcessing && (
-              <div className="progress-wrap">
-                <div className="progress-track"><div className="progress-bar" /></div>
-                <div className="progress-text">{progressText || 'Working…'}</div>
-              </div>
-            )}
-          </div>
+            <div className="hero-tool">
+              {mode === 'compare' && (
+                <Intake
+                  command={<>diff <var>a/</var>original <var>b/</var>new</>}
+                  slots={[
+                    { marker: '−', prefix: 'a/', role: 'original build', tone: 'old', file: jar1File, setFile: setJar1File },
+                    { marker: '+', prefix: 'b/', role: 'new build', tone: 'new', file: jar2File, setFile: setJar2File },
+                  ]}
+                  accept={['.jar', '.war', '.ear']}
+                  action="Compare"
+                  busy={isProcessing}
+                  progress={progressText}
+                  onRun={handleCompare}
+                  onSwap={() => { setJar1File(jar2File); setJar2File(jar1File); }}
+                />
+              )}
+              {mode === 'decompile' && (
+                <Intake
+                  command={<>cfr <var>archive</var> → src/</>}
+                  slots={[{ marker: '›', prefix: 'in/', role: 'archive to decompile', tone: 'neutral', file: srcJar, setFile: setSrcJar }]}
+                  accept={['.jar', '.war', '.ear']}
+                  action="Decompile"
+                  busy={isProcessing}
+                  progress={progressText}
+                  onRun={handleDecompile}
+                />
+              )}
+              {mode === 'profile' && (
+                <Intake
+                  command={<>jfr <var>recording</var> → flame graph</>}
+                  slots={[{ marker: '›', prefix: 'in/', role: 'flight recording', tone: 'neutral', file: jfrFile, setFile: setJfrFile }]}
+                  accept={['.jfr']}
+                  action="Analyze"
+                  busy={isProcessing}
+                  progress={progressText}
+                  onRun={handleProfile}
+                />
+              )}
+              {mode === 'compare' && (
+                <p className="hero-tip">Drop both archives on the panel at once and they fill <var>a/</var> and <var>b/</var> in order.</p>
+              )}
+            </div>
+          </main>
 
-          <ul className="trust-row">
-            <li><span>🔒</span> Processed locally in your browser</li>
-            <li><span>☕</span> Real JVM via WebAssembly</li>
-            <li><span>🧩</span> CFR decompiler</li>
-            <li><span>🪆</span> Nested &amp; fat JARs</li>
-          </ul>
-        </main>
-      )}
-
-      {/* ── Landing usage / SEO content (shown on the home screen) ── */}
-      {!hasResults && (
-        <>
-          <section className="landing" aria-label="About JAR Compare">
-            <div className="landing-inner">
-
-              <div className="lc-block">
-                <span className="lc-eyebrow">How it works</span>
-                <h2 className="lc-h2">Compare two JAR files in three steps</h2>
-                <ol className="steps">
-                  <li>
-                    <span className="step-n">1</span>
-                    <strong>Choose two JARs</strong>
-                    <p>Drag &amp; drop your original and updated <code>.jar</code> files into the two drop zones, or click to browse.</p>
-                  </li>
-                  <li>
-                    <span className="step-n">2</span>
-                    <strong>Run the comparison</strong>
-                    <p>Every entry is hashed and matched to find added, removed and modified files, including JARs nested inside JARs.</p>
-                  </li>
-                  <li>
-                    <span className="step-n">3</span>
-                    <strong>Review the diff</strong>
-                    <p>Changed classes are decompiled and shown as a side-by-side Java source diff, so you see real code changes, not bytecode.</p>
-                  </li>
-                </ol>
-              </div>
-
-              <div className="lc-block">
-                <span className="lc-eyebrow">Decompile</span>
-                <h2 className="lc-h2">Get the source back from any JAR</h2>
-                <ol className="steps">
-                  <li>
-                    <span className="step-n">1</span>
-                    <strong>Switch to Decompile</strong>
-                    <p>Pick the <em>Decompile</em> tab and drop in a single <code>.jar</code>, <code>.war</code> or <code>.ear</code> file.</p>
-                  </li>
-                  <li>
-                    <span className="step-n">2</span>
-                    <strong>Decompile &amp; extract</strong>
-                    <p>The whole archive is decompiled to readable Java with the CFR decompiler, and every resource is extracted.</p>
-                  </li>
-                  <li>
-                    <span className="step-n">3</span>
-                    <strong>Browse &amp; download</strong>
-                    <p>Explore sources in a package tree with syntax highlighting, then download everything as a <code>.zip</code>.</p>
-                  </li>
-                </ol>
-              </div>
-
-              <div className="lc-block">
-                <span className="lc-eyebrow">Features</span>
-                <h2 className="lc-h2">Everything you need to inspect Java builds</h2>
-                <div className="feature-grid">
-                  <div className="feature-card"><span className="feature-icon">📦</span><h3>Compare archives</h3><p>Class-by-class diff of two JAR, WAR or EAR files with added, removed and modified detection.</p></div>
-                  <div className="feature-card"><span className="feature-icon">🔍</span><h3>Source-level diffs</h3><p>Changed <code>.class</code> files are decompiled so you read Java, not bytecode.</p></div>
-                  <div className="feature-card"><span className="feature-icon">🪆</span><h3>Nested JARs</h3><p>Recurses into JARs packaged inside JARs, like Spring Boot fat JARs.</p></div>
-                  <div className="feature-card"><span className="feature-icon">🧩</span><h3>Decompile to source</h3><p>Turn any archive back into a browsable, downloadable Java source tree.</p></div>
-                  <div className="feature-card"><span className="feature-icon">📊</span><h3>JFR flame graphs</h3><p>Open a Java Flight Recorder file and explore CPU hot methods as an interactive flame graph.</p></div>
-                  <div className="feature-card"><span className="feature-icon">📝</span><h3>Markdown editor</h3><p>Write and preview Markdown with an outline, live Mermaid diagrams and export.</p></div>
+          <section className="sheet" aria-label="About JAR Compare">
+            {procedureOrder(mode).map((key, i) => {
+              const proc = PROCEDURES[key];
+              return (
+                <div className="sheet-row" key={key}>
+                  <div className="sheet-label"><span>§0{i + 1}</span>Procedure</div>
+                  <div className="sheet-body">
+                    <h2>{proc.title}</h2>
+                    <ol className="proc">
+                      {proc.steps.map((step) => <li key={step.key}><b>{step.key}.</b> {step.text}</li>)}
+                    </ol>
+                  </div>
                 </div>
-              </div>
+              );
+            })}
 
-              <div className="lc-block privacy-band">
-                <span className="privacy-icon" aria-hidden>🔒</span>
-                <div>
-                  <h2 className="lc-h2">Runs entirely in your browser</h2>
-                  <p className="lc-prose">
-                    JAR Compare runs a real Java Virtual Machine compiled to <strong>WebAssembly</strong> (via CheerpJ)
-                    right inside your browser tab. Your <code>.jar</code> files are <strong>never uploaded</strong> to
-                    a server: comparison and decompilation happen locally, keeping proprietary code private. Decompilation is
-                    powered by the <strong>CFR</strong> decompiler, the same engine used in the diff view.
-                  </p>
-                </div>
+            <div className="sheet-row">
+              <div className="sheet-label"><span>§04</span>Coverage</div>
+              <div className="sheet-body">
+                <h2>What it handles</h2>
+                <dl className="spec">
+                  <div><dt>Archives</dt><dd>JAR, WAR and EAR, compared entry by entry: added, removed, modified, identical.</dd></div>
+                  <div><dt>Nested JARs</dt><dd>Fat and Spring Boot JARs are opened recursively, so a changed library inside is a diff too.</dd></div>
+                  <div><dt>Source diffs</dt><dd>Changed <code>.class</code> files are decompiled before diffing; you never read raw bytecode.</dd></div>
+                  <div><dt>Decompiled trees</dt><dd>A whole archive back to browsable, downloadable Java.</dd></div>
+                  <div><dt>JFR recordings</dt><dd>Hot methods by self and total time, and a searchable flame graph.</dd></div>
+                  <div><dt>Markdown</dt><dd>An editor with outline, live preview and interactive Mermaid diagrams, for the notes that go with a release.</dd></div>
+                </dl>
               </div>
+            </div>
 
-              <div className="lc-block">
-                <span className="lc-eyebrow">FAQ</span>
-                <h2 className="lc-h2">Frequently asked questions</h2>
+            <div className="sheet-row sheet-row--statement">
+              <div className="sheet-label"><span>§05</span>Privacy</div>
+              <div className="sheet-body">
+                <h2 className="statement">Your bytecode never leaves this tab.</h2>
+                <p>
+                  A real Java virtual machine, compiled to WebAssembly by CheerpJ, runs inside the page. Comparison
+                  and decompilation happen on your machine with the CFR decompiler, so proprietary code is never
+                  uploaded anywhere.
+                </p>
+              </div>
+            </div>
+
+            <div className="sheet-row">
+              <div className="sheet-label"><span>§06</span>Questions</div>
+              <div className="sheet-body">
+                <h2>Frequently asked questions</h2>
                 <div className="faq">
                   <details>
                     <summary>Is JAR Compare free?</summary>
-                    <p>Yes, it's completely free, with no account or sign-up required.</p>
+                    <p>Yes. There is no account, no sign-up and no limit.</p>
                   </details>
                   <details>
                     <summary>Are my JAR files uploaded anywhere?</summary>
-                    <p>No. All processing happens in your browser using WebAssembly. Your files never leave your device.</p>
+                    <p>No. Everything runs in your browser through WebAssembly; the files never leave your device.</p>
                   </details>
                   <details>
                     <summary>Can it compare Spring Boot or fat/uber JARs?</summary>
-                    <p>Yes. JAR Compare recurses into nested JARs (e.g. <code>BOOT-INF/lib</code>) and diffs their contents too.</p>
+                    <p>Yes. Nested JARs such as <code>BOOT-INF/lib</code> are opened and their contents compared as well.</p>
                   </details>
                   <details>
                     <summary>How does it show source diffs from compiled classes?</summary>
-                    <p>Changed <code>.class</code> files are decompiled to Java with CFR, then shown as a side-by-side source diff.</p>
+                    <p>Changed <code>.class</code> files are decompiled to Java with CFR, then shown as a side-by-side diff.</p>
                   </details>
                   <details>
                     <summary>Can I download the decompiled source?</summary>
-                    <p>Yes. In Decompile mode you can browse the package tree and download the full source as a <code>.zip</code>.</p>
+                    <p>Yes. In Decompile mode, browse the package tree and download everything as a <code>.zip</code>.</p>
                   </details>
                 </div>
               </div>
-
             </div>
           </section>
 
-          <footer className="site-footer">
-            <span className="site-footer-brand">⬡ jar-compare</span>
-            <span>Compare &amp; decompile Java archives, free and in your browser.</span>
-            <a href="https://github.com/Emindu/jar-compare" target="_blank" rel="noopener noreferrer">View on GitHub ↗</a>
+          <footer className="colophon">
+            <span>jar-compare</span>
+            <span>Compare and decompile Java archives in the browser. Free, nothing uploaded.</span>
+            <a href="https://github.com/Emindu/jar-compare" target="_blank" rel="noopener noreferrer">Source on GitHub</a>
           </footer>
-        </>
+        </div>
       )}
 
       {/* ── Results: COMPARE ─────────────────────── */}

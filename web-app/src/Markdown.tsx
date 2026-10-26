@@ -158,8 +158,8 @@ function CodeBlock({ code, lang, theme }: { code: string; lang: string; theme: T
   );
 }
 
-const ALERTS: Record<string, [string, string]> = {
-  NOTE: ['ⓘ', 'Note'], TIP: ['💡', 'Tip'], IMPORTANT: ['❕', 'Important'], WARNING: ['⚠', 'Warning'], CAUTION: ['⛔', 'Caution'],
+const ALERTS: Record<string, string> = {
+  NOTE: 'Note', TIP: 'Tip', IMPORTANT: 'Important', WARNING: 'Warning', CAUTION: 'Caution',
 };
 
 /** GitHub-style callouts: a blockquote starting with [!NOTE], [!TIP], [!IMPORTANT], [!WARNING] or [!CAUTION]. */
@@ -167,8 +167,7 @@ function alerts(html: string): string {
   return html.replace(
     /<blockquote>\s*<p>\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*(?:<br>\s*)?/g,
     (_, kind: string) => {
-      const [icon, title] = ALERTS[kind];
-      return `<blockquote class="md-alert md-alert-${kind.toLowerCase()}"><p class="md-alert-title">${icon} ${title}</p><p>`;
+      return `<blockquote class="md-alert md-alert-${kind.toLowerCase()}"><p class="md-alert-title">${ALERTS[kind]}</p><p>`;
     },
   ).replace(/<p>\s*<\/p>/g, '');
 }
