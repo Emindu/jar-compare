@@ -1,9 +1,10 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { ChevronsDownUp, ChevronsUpDown, PanelLeft, Printer } from 'lucide-react';
 import { marked, type Token, type Tokens } from 'marked';
 import DOMPurify from 'dompurify';
 import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight, oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
-import type { MdEditorHandle } from './MdEditor';
+import type { EditorStats, MdEditorHandle } from './MdEditor';
 import { MermaidBlock } from './Diagram';
 import { DiagramLinks, type DiagramEntry, type DiagramLinkApi } from './diagramLinks';
 
@@ -214,8 +215,39 @@ function Section({
 
 // ── Viewer ─────────────────────────────────────────────────────────────────
 
+export interface DocStats { sections: number; diagrams: number; words: number; editor: EditorStats | null }
+
+/** Clean, standalone HTML for the rendered document (no viewer controls). */
+function standaloneHtml(article: HTMLElement, title: string): string {
+  const copy = article.cloneNode(true) as HTMLElement;
+  copy.querySelectorAll('button, input, select, .md-anchor, .md-collapsed-hint, .md-code-hd, .md-diagram-bar, .md-diagram-src, .dg-minimap, .md-empty')
+    .forEach((el) => el.remove());
+  copy.querySelectorAll('[title]').forEach((el) => el.removeAttribute('title'));
+  const esc = (t: string) => t.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  return `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>${esc(title)}</title>
+<style>
+body { margin: 0; background: #fff; color: #1f2328; font: 16px/1.65 "IBM Plex Sans", system-ui, sans-serif; }
+article { max-width: 860px; margin: 0 auto; padding: 48px 24px 80px; }
+h1, h2, h3, h4 { line-height: 1.25; margin: 1.6em 0 0.6em; }
+h1 { font-size: 2em; border-bottom: 1px solid #d0d7de; padding-bottom: 0.3em; }
+h2 { font-size: 1.45em; }
+code { font: 0.88em "IBM Plex Mono", ui-monospace, monospace; background: #f3f4f6; padding: 0.1em 0.35em; border-radius: 4px; }
+pre { background: #f6f8fa; border: 1px solid #d0d7de; border-radius: 6px; padding: 14px 16px; overflow: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; margin: 1em 0; }
+th, td { border: 1px solid #d0d7de; padding: 6px 12px; text-align: left; }
+blockquote { margin: 1em 0; padding: 0.2em 1em; border-left: 3px solid #d0d7de; color: #57606a; }
+img, svg { max-width: 100%; height: auto; }
+.md-diagram { margin: 1.2em 0; border: 1px solid #d0d7de; border-radius: 6px; padding: 16px; overflow: auto; }
+a { color: #0969da; }
+</style></head>
+<body><article>${copy.innerHTML}</article></body></html>`;
+}
+
 export default function MarkdownViewer({
-  text, name, theme, onChange, docControls,
+  text, name, theme, onChange, docControls, onStats, exportRef,
 }: {
   text: string;
   name: string;
@@ -223,6 +255,10 @@ export default function MarkdownViewer({
   onChange: (t: string) => void;
   /** Document controls (name, New / Open / Samples) shown at the start of the bar. */
   docControls?: React.ReactNode;
+  /** Document and cursor stats, for the status bar. */
+  onStats?: (s: DocStats) => void;
+  /** Receives a function that downloads the rendered document as standalone HTML. */
+  exportRef?: { current: (() => void) | null };
 }) {
   const { root, flat } = useMemo(() => parseSections(text), [text]);
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
@@ -233,6 +269,8 @@ export default function MarkdownViewer({
   const editing = view !== 'preview';
   const showPreview = view !== 'editor';
   const editorRef = useRef<MdEditorHandle>(null);
+  const [toolbarHost, setToolbarHost] = useState<HTMLElement | null>(null);
+  const [editorStats, setEditorStats] = useState<EditorStats | null>(null);
 
   // Links between `code` mentions in the text and items in rendered diagrams.
   const registry = useRef(new Set<DiagramEntry>());
@@ -251,6 +289,49 @@ export default function MarkdownViewer({
 
   const totalDiagrams = useMemo(() => countDiagrams(root), [root]);
   const words = useMemo(() => (text.match(/\S+/g) || []).length, [text]);
+
+  useEffect(() => {
+    onStats?.({ sections: flat.length, diagrams: totalDiagrams, words, editor: editing ? editorStats : null });
+  }, [onStats, flat.length, totalDiagrams, words, editing, editorStats]);
+
+  // Fade the formatting toolbar's edge when it doesn't fit the bar.
+  useEffect(() => {
+    if (!toolbarHost) return;
+    const check = () => toolbarHost.classList.toggle('is-clipped',
+      toolbarHost.scrollWidth - toolbarHost.scrollLeft > toolbarHost.clientWidth + 1);
+    const ro = new ResizeObserver(check);
+    ro.observe(toolbarHost);
+    toolbarHost.addEventListener('scroll', check, { passive: true });
+    const mo = new MutationObserver(check);
+    mo.observe(toolbarHost, { childList: true, subtree: true });
+    return () => { ro.disconnect(); mo.disconnect(); toolbarHost.removeEventListener('scroll', check); };
+  }, [toolbarHost]);
+
+  // Export works from the rendered preview; in editor-only view, show it first.
+  const pendingExport = useRef(false);
+  useEffect(() => {
+    if (!exportRef) return;
+    const run = () => {
+      const article = docRef.current?.querySelector<HTMLElement>('.md-doc');
+      if (!article) return;
+      const html = standaloneHtml(article, name.replace(/\.[^.]+$/, '') || 'Document');
+      const url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${name.replace(/\.[^.]+$/, '') || 'document'}.html`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    };
+    if (pendingExport.current && docRef.current) {
+      pendingExport.current = false;
+      setTimeout(run, 1200); // let diagrams render
+    }
+    exportRef.current = () => {
+      if (docRef.current) run();
+      else { pendingExport.current = true; setView('split'); }
+    };
+    return () => { exportRef.current = null; };
+  }, [exportRef, name, view]);
 
   const toggle = (id: string) =>
     setCollapsed((prev) => {
@@ -359,38 +440,28 @@ export default function MarkdownViewer({
   const outline = q ? flat.filter((s) => s.title.toLowerCase().includes(q)) : flat;
   const minDepth = flat.reduce((m, s) => Math.min(m, s.depth), 6);
 
-  const download = () => {
-    const blob = new Blob([text], { type: 'text/markdown' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = name || `${slugify(flat[0]?.title || 'document') || 'document'}.md`;
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-
   return (
     <>
       <div className="md-docbar">
         <button
-          className={`file-action-btn md-outline-toggle${outlineOpen ? ' active' : ''}`}
+          className={`wb-icon-btn md-outline-toggle${outlineOpen ? ' is-on' : ''}`}
           onClick={() => setOutlineOpen((v) => !v)}
           title={outlineOpen ? 'Hide outline' : 'Show outline'}
-        >☰</button>
+          aria-label={outlineOpen ? 'Hide outline' : 'Show outline'}
+          aria-pressed={outlineOpen}
+        ><PanelLeft size={15} aria-hidden /></button>
         {docControls}
+        {editing && <span className="md-docbar-sep" />}
+        <div className="md-docbar-tools" ref={setToolbarHost} />
         <span className="md-docbar-spacer" />
-        <span className="md-docstats" title={`${text.split('\n').length} lines`}>
-          {flat.length} sections · {totalDiagrams} diagrams · {words.toLocaleString()} words
-        </span>
-        <div className="md-view-switch" role="group" aria-label="View">
+        <span className="cv-seg md-view-switch" role="group" aria-label="View">
           {(['editor', 'split', 'preview'] as const).map((v) => (
-            <button key={v} className={view === v ? 'active' : ''} onClick={() => setView(v)} title={v === 'editor' ? 'Editor only' : v === 'split' ? 'Editor and preview' : 'Preview only'}>
-              {v === 'preview' ? 'Preview' : v === 'split' ? 'Split' : 'Write'}
+            <button key={v} className={view === v ? 'is-on' : ''} aria-pressed={view === v} onClick={() => setView(v)} title={v === 'editor' ? 'Editor only' : v === 'split' ? 'Editor and preview' : 'Preview only'}>
+              {v === 'preview' ? 'Preview' : v === 'split' ? 'Split' : 'Editor'}
             </button>
           ))}
-        </div>
-        <button className="file-action-btn" onClick={download} title="Download the Markdown file">⇣ .md</button>
-        <button className="file-action-btn" onClick={() => window.print()} title="Print or save as PDF">⎙</button>
+        </span>
+        <button className="wb-icon-btn" onClick={() => window.print()} title="Print or save as PDF" aria-label="Print or save as PDF"><Printer size={15} aria-hidden /></button>
       </div>
 
       <div className="workspace">
@@ -404,12 +475,13 @@ export default function MarkdownViewer({
               onChange={(e) => setFilter(e.target.value)}
               spellCheck={false}
             />
-            <button className="file-action-btn" onClick={() => setCollapsed(new Set())} title="Expand all">⊞</button>
+            <button className="wb-icon-btn" onClick={() => setCollapsed(new Set())} title="Expand all" aria-label="Expand all"><ChevronsUpDown size={14} aria-hidden /></button>
             <button
-              className="file-action-btn"
+              className="wb-icon-btn"
               onClick={() => setCollapsed(new Set(flat.filter((s) => s.children.length || s.body.length).map((s) => s.id)))}
               title="Collapse all"
-            >⊟</button>
+              aria-label="Collapse all"
+            ><ChevronsDownUp size={14} aria-hidden /></button>
           </div>
           <div className="file-list">
             {outline.length === 0 && <div className="md-outline-empty">No headings</div>}
@@ -422,7 +494,7 @@ export default function MarkdownViewer({
                 title={s.title}
               >
                 <span className="md-outline-title">{s.title}</span>
-                {s.diagrams > 0 && <span className="md-outline-badge" title="Diagrams">◇{s.diagrams > 1 ? s.diagrams : ''}</span>}
+                {s.diagrams > 0 && <span className="md-outline-badge" title={`${s.diagrams} ${s.diagrams === 1 ? 'diagram' : 'diagrams'}`}>{s.diagrams}</span>}
               </button>
             ))}
           </div>
@@ -437,7 +509,7 @@ export default function MarkdownViewer({
           <div className={`md-split md-view-${view}`}>
             {editing && (
               <Suspense fallback={<div className="md-editor md-diagram-loading">Loading editor…</div>}>
-                <MdEditor ref={editorRef} value={text} onChange={onChange} onHeading={onEditorHeading} theme={theme} />
+                <MdEditor ref={editorRef} value={text} onChange={onChange} onHeading={onEditorHeading} onStats={setEditorStats} toolbarHost={toolbarHost} theme={theme} />
               </Suspense>
             )}
             {showPreview && <div className="diff-body md-doc-scroll" ref={docRef} onClick={onDocClick} onMouseOver={onDocOver} onMouseOut={onDocOut}>

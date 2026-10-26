@@ -7,9 +7,11 @@ import { TOOLS, type Tool, type JvmState } from './shell';
 // area between them.
 
 export function TitleBar({
-  crumbs, onHome, actions, center,
+  crumbs, onHome, actions, center, dirty,
 }: {
   crumbs: string[];
+  /** Mark the last crumb as having unsaved changes. */
+  dirty?: boolean;
   onHome: () => void;
   actions?: ReactNode;
   center?: ReactNode;
@@ -25,6 +27,7 @@ export function TitleBar({
           <span key={i} className={`wb-crumb${i === crumbs.length - 1 ? ' is-last' : ''}`}>
             <span className="wb-crumb-sep" aria-hidden>/</span>
             <span className="wb-crumb-text" title={c}>{c}</span>
+            {dirty && i === crumbs.length - 1 && <span className="wb-dirty" title="Unsaved changes" aria-label="Unsaved changes" />}
           </span>
         ))}
       </div>

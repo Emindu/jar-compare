@@ -39,7 +39,7 @@ public record Candle(String ticker, double open, double high, double low, double
 
 ## Diagrams
 
-Fenced `mermaid` blocks become diagrams. Click a node to trace what feeds it and what it feeds; use **⚙ View** for layout, direction and themes.
+Fenced `mermaid` blocks become diagrams. Click a node to trace what feeds it and what it feeds; use **View** for layout, direction and themes.
 
 ```mermaid
 flowchart LR
@@ -61,4 +61,4 @@ sequenceDiagram
 ```
 
 > [!WARNING]
-> Your draft lives in this browser only. Use **⇣ .md** to keep a copy.
+> Your draft lives in this browser only. Use **Save .md** to keep a copy.

@@ -16,7 +16,7 @@ import css from 'react-syntax-highlighter/dist/esm/languages/prism/css';
 import JSZip from 'jszip';
 import { parseJfr, type JfrResult } from './jfr';
 import Profiler, { type ProfileStatus } from './Profiler';
-import MarkdownWorkspace from './MarkdownWorkspace';
+import MarkdownWorkspace, { type MdActions, type MdStatus } from './MarkdownWorkspace';
 import Intake from './Intake';
 import CompareView, { type CompareStatus } from './CompareView';
 import { type DiffResult } from './diffModel';
@@ -209,6 +209,8 @@ export default function App() {
   const [compareStatus, setCompareStatus] = useState<CompareStatus | null>(null);
   const [profileStatus, setProfileStatus] = useState<ProfileStatus | null>(null);
   const flameExport = useRef<(() => void) | null>(null);
+  const [mdStatus, setMdStatus] = useState<MdStatus | null>(null);
+  const mdActions = useRef<MdActions | null>(null);
   const [mdIncoming, setMdIncoming] = useState<{ id: number; name: string; text: string } | null>(null);
   const openPicker = useRef<HTMLInputElement>(null);
   const remember = (kind: Exclude<Tool, 'home'>, label: string) => setRecent(addRecent(kind, label));
@@ -1352,6 +1354,7 @@ export default function App() {
   if (mode === 'compare' && diffResult && jar1File && jar2File) crumbs.push(`${jar1File.name} → ${jar2File.name}`);
   if (mode === 'decompile' && decompiled && srcJar) crumbs.push(srcJar.name);
   if (mode === 'profile' && jfrResult && jfrFile) crumbs.push(jfrFile.name);
+  if (mode === 'markdown' && mdStatus) crumbs.push(mdStatus.name);
 
   const titleActions = (
     <>
@@ -1375,6 +1378,14 @@ export default function App() {
           <button className="wb-btn wb-btn-primary" onClick={resetProfile}><RotateCcw size={14} /> Open recording</button>
         </>
       )}
+      {mode === 'markdown' && (
+        <>
+          <button className="wb-btn" onClick={() => mdActions.current?.exportHtml()}><FileDown size={14} /> Export HTML</button>
+          <button className="wb-btn wb-btn-primary" onClick={() => mdActions.current?.save()} title={`Download the Markdown file (${MOD}S)`}>
+            <Download size={14} /> Save .md <kbd className="wb-btn-kbd">{MOD}S</kbd>
+          </button>
+        </>
+      )}
       <ThemeButton theme={theme} onToggle={toggleTheme} />
     </>
   );
@@ -1396,7 +1407,7 @@ export default function App() {
 
   return (
     <div className="wb">
-      <TitleBar crumbs={crumbs} onHome={() => switchMode('home')} actions={titleActions} />
+      <TitleBar crumbs={crumbs} dirty={mode === 'markdown' && !!mdStatus?.dirty} onHome={() => switchMode('home')} actions={titleActions} />
       <ActivityBar tool={mode} onSelect={switchMode} busy={busyTool ? { [busyTool]: isProcessing } : undefined} />
 
       <main className="wb-main">
@@ -1707,6 +1718,8 @@ export default function App() {
           theme={theme}
           incoming={mdIncoming}
           onOpen={(name) => remember('markdown', name)}
+          onStatus={setMdStatus}
+          actionsRef={mdActions}
         />
       )}
       </main>
@@ -1718,12 +1731,17 @@ export default function App() {
             <span>{allChanged(diffResult)} changed{compareMs !== null ? ` · compared in ${(compareMs / 1000).toFixed(1)} s` : ''}</span>
           ) : mode === 'profile' && jfrResult ? (
             <><span>parsed in the browser · no JVM needed</span><span>jdk.ExecutionSample</span></>
+          ) : mode === 'markdown' && mdStatus ? (
+            <>
+              <span>{mdStatus.saved === 'off' ? 'storage blocked · save to keep your work' : mdStatus.saved === 'saving' ? 'saving draft…' : 'draft kept in this browser'}</span>
+              {mdStatus.stats && <span>{mdStatus.stats.sections} sections · {mdStatus.stats.diagrams} {mdStatus.stats.diagrams === 1 ? 'diagram' : 'diagrams'}{mdStatus.stats.editor ? ` · ${mdStatus.stats.editor.errors} ${mdStatus.stats.editor.errors === 1 ? 'error' : 'errors'}` : ''}</span>}
+            </>
           ) : mode === 'decompile' && decompiled ? (
             <span>decompiled {javaPaths.length} classes{decompileMs !== null ? ` in ${(decompileMs / 1000).toFixed(1)} s` : ''}</span>
           ) : (
             <span>CheerpJ 4.3 · WebAssembly</span>
           )}
-          <span>local only · 0 B uploaded</span>
+          {mode !== 'markdown' && <span>local only · 0 B uploaded</span>}
           {isProcessing && progressText && <span className="wb-status-progress">{progressText}</span>}
         </>}
         right={<>
@@ -1735,6 +1753,14 @@ export default function App() {
             </>
           )}
           {mode === 'decompile' && classInfo && <span>{classInfo.lines} lines · UTF-8 · Java · CFR</span>}
+          {mode === 'markdown' && mdStatus?.stats && (
+            <>
+              {mdStatus.stats.editor && <span>Ln {mdStatus.stats.editor.line}, Col {mdStatus.stats.editor.col}{mdStatus.stats.editor.sel ? ` (${mdStatus.stats.editor.sel} selected)` : ''}</span>}
+              {mdStatus.stats.editor && <span>{mdStatus.stats.editor.lines} lines</span>}
+              <span>{mdStatus.stats.words.toLocaleString()} words</span>
+              <span>Markdown · Mermaid 11</span>
+            </>
+          )}
           {mode === 'profile' && jfrResult && profileStatus && (
             <><span>zoom: {profileStatus.zoom}</span><span>{profileStatus.metric} time</span></>
           )}

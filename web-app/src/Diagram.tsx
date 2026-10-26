@@ -1,4 +1,5 @@
 import { useContext, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import { ChevronDown, Maximize2, Pause, Play, SkipBack, SkipForward, SlidersHorizontal, StepBack, StepForward, X } from 'lucide-react';
 import { DiagramLinks, type DiagramEntry } from './diagramLinks';
 import {
   renderMermaid, checkMermaid, cleanMermaidMessage, prepareSource, diagramType, isFlowchart, flowchartSubgraphs,
@@ -366,7 +367,7 @@ function TraceChip({ label, onClear, action }: { label: string; onClear: () => v
       <span className="dg-chip-dot" />
       Tracing <strong>{label}</strong>
       {action && <button className="dg-chip-action" onClick={action.run} title={action.title}>{action.label}</button>}
-      <button onClick={onClear} aria-label="Clear selection">✕</button>
+      <button onClick={onClear} aria-label="Clear selection"><X size={13} aria-hidden /></button>
     </span>
   );
 }
@@ -398,7 +399,7 @@ function ViewMenu({ opts, setOpts, flow, collapsedCount, onCollapseAll, onExpand
   return (
     <span className="dg-export">
       <button className={`file-action-btn${changed ? ' active' : ''}`} onClick={() => setOpen((v) => !v)} aria-expanded={open}>
-        ⚙ View ▾
+        <SlidersHorizontal size={13} aria-hidden /> View <ChevronDown size={13} aria-hidden />
       </button>
       {open && (
         <span className="dg-menu dg-view-menu" onMouseLeave={() => setOpen(false)}>
@@ -437,15 +438,15 @@ function StepBar({ step, total, setStep, playing, setPlaying, onClose }: {
   const last = Math.max(0, total - 1);
   return (
     <span className="dg-steps" role="group" aria-label="Step through messages">
-      <button onClick={() => setStep(0)} disabled={step === 0} title="First (Home)">⏮</button>
-      <button onClick={() => setStep(Math.max(0, step - 1))} disabled={step === 0} title="Previous (←)">◀</button>
+      <button onClick={() => setStep(0)} disabled={step === 0} title="First (Home)" aria-label="First"><SkipBack size={13} aria-hidden /></button>
+      <button onClick={() => setStep(Math.max(0, step - 1))} disabled={step === 0} title="Previous (←)" aria-label="Previous"><StepBack size={13} aria-hidden /></button>
       <span className="dg-steps-n">{step + 1} / {total}</span>
-      <button onClick={() => setStep(Math.min(last, step + 1))} disabled={step >= last} title="Next (→)">▶</button>
-      <button onClick={() => setStep(last)} disabled={step >= last} title="Last (End)">⏭</button>
-      <button onClick={() => { if (step >= last) setStep(0); setPlaying(!playing); }} title="Play / pause (Space)">
-        {playing ? '⏸' : '⏯'}
+      <button onClick={() => setStep(Math.min(last, step + 1))} disabled={step >= last} title="Next (→)" aria-label="Next"><StepForward size={13} aria-hidden /></button>
+      <button onClick={() => setStep(last)} disabled={step >= last} title="Last (End)" aria-label="Last"><SkipForward size={13} aria-hidden /></button>
+      <button onClick={() => { if (step >= last) setStep(0); setPlaying(!playing); }} title="Play / pause (Space)" aria-label={playing ? 'Pause' : 'Play'}>
+        {playing ? <Pause size={13} aria-hidden /> : <Play size={13} aria-hidden />}
       </button>
-      <button onClick={onClose} title="Stop stepping">✕</button>
+      <button onClick={onClose} title="Stop stepping" aria-label="Stop stepping"><X size={13} aria-hidden /></button>
     </span>
   );
 }
@@ -550,7 +551,7 @@ function ExportMenu({ hostRef, code, source, theme, name }: {
   return (
     <span className="dg-export">
       <button className="file-action-btn" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
-        {status || 'Export ▾'}
+        {status || <>Export <ChevronDown size={13} aria-hidden /></>}
       </button>
       {open && (
         <span className="dg-menu" onMouseLeave={() => setOpen(false)}>
@@ -704,20 +705,20 @@ export function MermaidBlock({ code, theme, name }: { code: string; theme: Theme
   return (
     <figure className="md-diagram" ref={figRef} tabIndex={step !== null ? 0 : undefined} onKeyDown={onKeyDown}>
       <div className="md-diagram-bar">
-        <span className="md-diagram-kind">◇ {kind || 'diagram'}</span>
+        <span className="md-diagram-kind">{kind || 'diagram'}</span>
         {svg && !showSource && step === null && <SearchBox query={query} setQuery={setQuery} countRef={countRef} />}
         {selected && !query && step === null && <TraceChip label={selected.label} onClear={() => choose(null)} action={chipAction} />}
         {stepBar}
         <span className="md-diagram-actions">
           {kind === 'sequenceDiagram' && svg && !showSource && step === null && msgCount > 0 && (
-            <button className="file-action-btn" onClick={startStepping} title="Walk through the messages one by one">▶ Step</button>
+            <button className="file-action-btn" onClick={startStepping} title="Walk through the messages one by one"><Play size={13} aria-hidden /> Step</button>
           )}
           {svg && !showSource && viewMenu}
           <button className="file-action-btn" onClick={() => setShowSource((v) => !v)}>
             {showSource ? 'Diagram' : 'Source'}
           </button>
           {svg && !showSource && <ExportMenu hostRef={hostRef} code={code} source={source} theme={theme} name={name} />}
-          {svg && <button className="file-action-btn" onClick={() => setExpanded(true)}>⤢ Expand</button>}
+          {svg && <button className="file-action-btn" onClick={() => setExpanded(true)}><Maximize2 size={13} aria-hidden /> Expand</button>}
         </span>
       </div>
       {showSource ? (
@@ -897,7 +898,7 @@ function DiagramModal({
             <button className="file-action-btn" onClick={() => setZoom(1)}>100%</button>
             <button className="file-action-btn" onClick={() => setZoom((z) => Math.min(6, z * 1.25))}>+</button>
             {menus}
-            <button className="file-action-btn" onClick={onClose}>✕ Close</button>
+            <button className="file-action-btn" onClick={onClose}><X size={13} aria-hidden /> Close</button>
           </span>
         </div>
         <div className="md-modal-stage">

@@ -1,4 +1,5 @@
 import { useEffect, useImperativeHandle, useRef, useState, type Ref } from 'react';
+import { createPortal } from 'react-dom';
 import { EditorState, EditorSelection, type ChangeSpec } from '@codemirror/state';
 import {
   EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter,
@@ -8,7 +9,11 @@ import { defaultKeymap, history, historyKeymap, indentWithTab, undo, redo } from
 import {
   syntaxHighlighting, HighlightStyle, bracketMatching, indentOnInput, foldGutter, foldKeymap, syntaxTree, ensureSyntaxTree,
 } from '@codemirror/language';
-import { linter, lintGutter, type Diagnostic } from '@codemirror/lint';
+import { diagnosticCount, linter, lintGutter, type Diagnostic } from '@codemirror/lint';
+import {
+  Bold, Braces, Code, Heading1, Heading2, Heading3, Image, Italic, Link, List, ListChecks, ListOrdered,
+  Minus, Quote, Redo2, Search, Strikethrough, Table, TableProperties, Undo2, Workflow, type LucideIcon,
+} from 'lucide-react';
 import { markdown, markdownLanguage, markdownKeymap } from '@codemirror/lang-markdown';
 import { languages } from '@codemirror/language-data';
 import {
@@ -456,33 +461,44 @@ function headingLines(state: EditorState): number[] {
   return out;
 }
 
-interface Stats { line: number; col: number; sel: number; words: number }
+export interface EditorStats { line: number; col: number; sel: number; words: number; lines: number; errors: number }
+type Stats = EditorStats;
 
 function statsOf(state: EditorState): Stats {
   const head = state.selection.main.head;
   const line = state.doc.lineAt(head);
   const sel = state.selection.ranges.reduce((a, r) => a + (r.to - r.from), 0);
-  return { line: line.number, col: head - line.from + 1, sel, words: (state.doc.toString().match(/\S+/g) || []).length };
+  return {
+    line: line.number, col: head - line.from + 1, sel,
+    words: (state.doc.toString().match(/\S+/g) || []).length,
+    lines: state.doc.lines,
+    errors: diagnosticCount(state),
+  };
 }
 
 export default function MdEditor({
-  value, onChange, onHeading, theme, ref,
+  value, onChange, onHeading, onStats, toolbarHost, theme, ref,
 }: {
   value: string;
   theme: Theme;
   onChange: (text: string) => void;
   /** Called with the index of the heading the cursor is under (-1 before the first). */
   onHeading?: (index: number) => void;
+  /** Cursor and document stats; when given, the editor shows no status line of its own. */
+  onStats?: (s: EditorStats) => void;
+  /** Render the formatting toolbar here instead of above the editor. */
+  toolbarHost?: HTMLElement | null;
   ref?: Ref<MdEditorHandle>;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
-  const cb = useRef({ onChange, onHeading });
-  const [stats, setStats] = useState<Stats>({ line: 1, col: 1, sel: 0, words: 0 });
+  const cb = useRef({ onChange, onHeading, onStats });
+  const [stats, setStats] = useState<Stats>({ line: 1, col: 1, sel: 0, words: 0, lines: 1, errors: 0 });
   const [fence, setFence] = useState<Fence | null>(null);
   const [hiddenFence, setHiddenFence] = useState<number | null>(null);
 
-  useEffect(() => { cb.current = { onChange, onHeading }; });
+  useEffect(() => { cb.current = { onChange, onHeading, onStats }; });
+  useEffect(() => { cb.current.onStats?.(stats); }, [stats]);
 
   useEffect(() => {
     let timer = 0;
@@ -536,8 +552,8 @@ export default function MdEditor({
               clearTimeout(timer);
               timer = window.setTimeout(() => cb.current.onChange(u.state.doc.toString()), 250);
             }
+            if (u.docChanged || u.selectionSet || u.transactions.some((tr) => tr.effects.length)) setStats(statsOf(u.state));
             if (u.docChanged || u.selectionSet) {
-              setStats(statsOf(u.state));
               const head = u.state.selection.main.head;
               const idx = headingLines(u.state).filter((p) => p <= head).length - 1;
               if (idx !== lastHeading && u.selectionSet) { lastHeading = idx; cb.current.onHeading?.(idx); }
@@ -575,63 +591,68 @@ export default function MdEditor({
 
   const run = (fn: (v: EditorView) => boolean) => () => { if (viewRef.current) fn(viewRef.current); };
 
-  const tools: ([string, string, (v: EditorView) => boolean] | null)[] = [
-    ['B', 'Bold (Ctrl+B)', (v) => wrap(v, '**')],
-    ['I', 'Italic (Ctrl+I)', (v) => wrap(v, '*')],
-    ['S', 'Strikethrough (Ctrl+Shift+X)', (v) => wrap(v, '~~')],
-    ['</>', 'Inline code (Ctrl+E)', (v) => wrap(v, '`', '`', 'code')],
+  const tools: ([LucideIcon, string, (v: EditorView) => boolean] | null)[] = [
+    [Bold, 'Bold (Ctrl+B)', (v) => wrap(v, '**')],
+    [Italic, 'Italic (Ctrl+I)', (v) => wrap(v, '*')],
+    [Strikethrough, 'Strikethrough (Ctrl+Shift+X)', (v) => wrap(v, '~~')],
+    [Code, 'Inline code (Ctrl+E)', (v) => wrap(v, '`', '`', 'code')],
     null,
-    ['H1', 'Heading 1 (Ctrl+Alt+1)', heading(1)],
-    ['H2', 'Heading 2 (Ctrl+Alt+2)', heading(2)],
-    ['H3', 'Heading 3 (Ctrl+Alt+3)', heading(3)],
+    [Heading1, 'Heading 1 (Ctrl+Alt+1)', heading(1)],
+    [Heading2, 'Heading 2 (Ctrl+Alt+2)', heading(2)],
+    [Heading3, 'Heading 3 (Ctrl+Alt+3)', heading(3)],
     null,
-    ['•', 'Bullet list (Ctrl+Shift+8)', (v) => linePrefix(v, '- ', /^\s*[-*+]\s+(\[[ xX]\]\s+)?/)],
-    ['1.', 'Numbered list (Ctrl+Shift+7)', (v) => linePrefix(v, (i) => `${i + 1}. `, /^\s*\d+[.)]\s+/)],
-    ['☑', 'Task list (Ctrl+Shift+C)', (v) => linePrefix(v, '- [ ] ', /^\s*[-*+]\s+\[[ xX]\]\s+/)],
-    ['❝', 'Quote (Ctrl+Shift+.)', (v) => linePrefix(v, '> ', /^>\s?/)],
+    [List, 'Bullet list (Ctrl+Shift+8)', (v) => linePrefix(v, '- ', /^\s*[-*+]\s+(\[[ xX]\]\s+)?/)],
+    [ListOrdered, 'Numbered list (Ctrl+Shift+7)', (v) => linePrefix(v, (i) => `${i + 1}. `, /^\s*\d+[.)]\s+/)],
+    [ListChecks, 'Task list (Ctrl+Shift+C)', (v) => linePrefix(v, '- [ ] ', /^\s*[-*+]\s+\[[ xX]\]\s+/)],
+    [Quote, 'Quote (Ctrl+Shift+.)', (v) => linePrefix(v, '> ', /^>\s?/)],
     null,
-    ['🔗', 'Link (Ctrl+K)', (v) => insertLink(v)],
-    ['🖼', 'Image', (v) => insertLink(v, true)],
-    ['⊞', 'Table', (v) => insertBlock(v, '| Column 1 | Column 2 | Column 3 |\n| -------- | -------- | -------- |\n|          |          |          |', 2)],
-    ['⇔', 'Format table at cursor (Ctrl+Alt+T)', formatTable],
-    ['{ }', 'Code block', (v) => insertBlock(v, '```\n\n```', 3)],
-    ['◇', 'Mermaid diagram', (v) => insertBlock(v, '```mermaid\nflowchart LR\n    A[Start] --> B[End]\n```', 30)],
-    ['—', 'Horizontal rule', (v) => insertBlock(v, '---')],
+    [Link, 'Link (Ctrl+K)', (v) => insertLink(v)],
+    [Image, 'Image', (v) => insertLink(v, true)],
+    [Table, 'Table', (v) => insertBlock(v, '| Column 1 | Column 2 | Column 3 |\n| -------- | -------- | -------- |\n|          |          |          |', 2)],
+    [TableProperties, 'Format table at cursor (Ctrl+Alt+T)', formatTable],
+    [Braces, 'Code block', (v) => insertBlock(v, '```\n\n```', 3)],
+    [Workflow, 'Mermaid diagram', (v) => insertBlock(v, '```mermaid\nflowchart LR\n    A[Start] --> B[End]\n```', 30)],
+    [Minus, 'Horizontal rule', (v) => insertBlock(v, '---')],
     null,
-    ['↶', 'Undo (Ctrl+Z)', undo],
-    ['↷', 'Redo (Ctrl+Shift+Z)', redo],
-    ['🔍', 'Find / replace (Ctrl+F)', openSearchPanel],
+    [Undo2, 'Undo (Ctrl+Z)', undo],
+    [Redo2, 'Redo (Ctrl+Shift+Z)', redo],
+    [Search, 'Find / replace (Ctrl+F)', openSearchPanel],
   ];
+
+  const toolbar = (
+        <div className="md-toolbar" role="toolbar" aria-label="Formatting">
+          {tools.map((tool, i) =>
+            tool ? (
+              <button
+                key={i}
+                className="md-tool"
+                title={tool[1]}
+                aria-label={tool[1]}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={run(tool[2])}
+              >
+                {(() => { const Icon = tool[0]; return <Icon size={15} strokeWidth={1.75} aria-hidden />; })()}
+              </button>
+            ) : (
+              <span key={i} className="md-tool-sep" />
+            ),
+          )}
+        </div>
+  );
 
   return (
     <div className="md-editor">
-      <div className="md-toolbar" role="toolbar" aria-label="Formatting">
-        {tools.map((tool, i) =>
-          tool ? (
-            <button
-              key={i}
-              className={`md-tool${tool[0] === 'B' ? ' md-tool-b' : tool[0] === 'I' ? ' md-tool-i' : tool[0] === 'S' ? ' md-tool-s' : ''}`}
-              title={tool[1]}
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={run(tool[2])}
-            >
-              {tool[0]}
-            </button>
-          ) : (
-            <span key={i} className="md-tool-sep" />
-          ),
-        )}
-      </div>
+      {toolbarHost ? createPortal(toolbar, toolbarHost) : toolbar}
       <div className="md-cm" ref={hostRef} />
       {fence && fence.code.trim() && hiddenFence !== fence.from && (
         <LivePreview fence={fence} theme={theme} onClose={() => setHiddenFence(fence.from)} />
       )}
-      <div className="md-editor-status">
+      {!onStats && <div className="md-editor-status">
         <span>Ln {stats.line}, Col {stats.col}</span>
         {stats.sel > 0 && <span>{stats.sel} selected</span>}
         <span>{stats.words.toLocaleString()} words</span>
         <span className="md-editor-hint">Type <kbd>/</kbd> for blocks &amp; diagrams</span>
-      </div>
+      </div>}
     </div>
   );
 }
