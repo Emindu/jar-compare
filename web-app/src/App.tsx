@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import ReactDiffViewer from 'react-diff-viewer-continued';
 import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight, oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import java from 'react-syntax-highlighter/dist/esm/languages/prism/java';
@@ -19,6 +18,8 @@ import { parseJfr, type JfrResult } from './jfr';
 import Profiler from './Profiler';
 import MarkdownWorkspace from './MarkdownWorkspace';
 import Intake from './Intake';
+import CompareView, { type CompareStatus } from './CompareView';
+import { type DiffResult } from './diffModel';
 import Home from './Home';
 import { TitleBar, ActivityBar, StatusBar, ThemeButton } from './Workbench';
 import { MOD, TOOLS, type Tool, type JvmState } from './shell';
@@ -38,22 +39,6 @@ SyntaxHighlighter.registerLanguage('sql', sql);
 SyntaxHighlighter.registerLanguage('bash', bash);
 SyntaxHighlighter.registerLanguage('javascript', javascript);
 SyntaxHighlighter.registerLanguage('css', css);
-
-interface FileContent {
-  content1?: string;
-  content2?: string;
-}
-
-interface DiffResult {
-  added: string[];
-  removed: string[];
-  modified: string[];
-  modifiedClasses: string[];
-  identicalSourceClasses: string[];
-  nestedChanges: string[];
-  modifiedNested: string[];
-  contents: Record<string, FileContent>;
-}
 
 interface DecompiledFile {
   encoding: 'utf8' | 'base64';
@@ -98,18 +83,6 @@ function startJvm(): Promise<void> {
   }
   return jvmInit;
 }
-
-type FileStatus = 'modifiedClasses' | 'modified' | 'added' | 'removed' | 'identicalSourceClasses' | 'nestedChanges' | 'modifiedNested';
-
-const STATUS_META: Record<FileStatus, { badge: string; cls: string; label: string }> = {
-  modifiedClasses:        { badge: 'M', cls: 'modified-class', label: 'Modified Class' },
-  modified:               { badge: 'M', cls: 'modified',       label: 'Modified'        },
-  added:                  { badge: 'A', cls: 'added',          label: 'Added'           },
-  removed:                { badge: 'R', cls: 'removed',        label: 'Removed'         },
-  identicalSourceClasses: { badge: '~', cls: 'identical',      label: 'Identical Source'},
-  nestedChanges:          { badge: 'N', cls: 'nested',         label: 'Nested JAR'      },
-  modifiedNested:         { badge: '⧉', cls: 'archive',        label: 'Nested Archive'  },
-};
 
 const JAR_PATH = '/app' + import.meta.env.BASE_URL + 'webcomparer.jar';
 
@@ -205,16 +178,6 @@ function fuzzyScore(query: string, target: string): number | null {
   return qi === q.length ? score : null;
 }
 
-// Which bucket a path currently lives in (for re-selecting a drilled-in file).
-function classifyPath(d: DiffResult, path: string): FileStatus {
-  if (d.modifiedClasses.includes(path)) return 'modifiedClasses';
-  if (d.modified.includes(path)) return 'modified';
-  if (d.added.includes(path)) return 'added';
-  if (d.removed.includes(path)) return 'removed';
-  if (d.identicalSourceClasses.includes(path)) return 'identicalSourceClasses';
-  return 'modifiedNested';
-}
-
 // Merge a nested archive's sub-comparison into the parent diff. Every sub-path
 // is prefixed with `pfx` (e.g. "BOOT-INF/lib/foo.jar -> "); modified classes are
 // split into real source changes vs. identical-decompiled-source, matching the
@@ -243,12 +206,21 @@ function mergeNestedDiff(prev: DiffResult, pfx: string, sub: DiffResult): DiffRe
   };
 }
 
+// Timestamps for measuring a job (kept outside the component; jobs run in handlers).
+const now = () => performance.now();
+
+const allChanged = (d: DiffResult) =>
+  d.modifiedClasses.length + d.modified.length + d.added.length + d.removed.length
+  + d.identicalSourceClasses.length + d.nestedChanges.length + d.modifiedNested.length;
+
 export default function App() {
   const [mode, setMode] = useState<Mode>('home');
   const [jvm, setJvm] = useState<JvmState>(() => (typeof window.cheerpjInit === 'undefined' ? 'unavailable' : 'loading'));
   const [busyTool, setBusyTool] = useState<Tool | null>(null);
   const [jobError, setJobError] = useState<{ tool: Tool; message: string } | null>(null);
   const [recent, setRecent] = useState<RecentItem[]>(loadRecent);
+  const [compareMs, setCompareMs] = useState<number | null>(null);
+  const [compareStatus, setCompareStatus] = useState<CompareStatus | null>(null);
   const [mdIncoming, setMdIncoming] = useState<{ id: number; name: string; text: string } | null>(null);
   const openPicker = useRef<HTMLInputElement>(null);
   const remember = (kind: Exclude<Tool, 'home'>, label: string) => setRecent(addRecent(kind, label));
@@ -269,9 +241,6 @@ export default function App() {
   const [jar2File, setJar2File] = useState<File | null>(null);
   const [diffResult, setDiffResult] = useState<DiffResult | null>(null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
-  const [selectedType, setSelectedType] = useState<FileStatus | null>(null);
-  const [fileContent1, setFileContent1] = useState('');
-  const [fileContent2, setFileContent2] = useState('');
   const [expandingNested, setExpandingNested] = useState<string | null>(null); // nested archive being compared
   const [expandedNested, setExpandedNested] = useState<Set<string>>(new Set()); // nested archives already drilled into
 
@@ -438,7 +407,6 @@ export default function App() {
     setJar1File(null);
     setJar2File(null);
     setSelectedFile(null);
-    setSelectedType(null);
     setExpandingNested(null);
     setExpandedNested(new Set());
   };
@@ -550,6 +518,7 @@ export default function App() {
     setIsProcessing(true);
     setBusyTool('compare');
     setJobError(null);
+    const started = now();
     setProgressText('Preparing environments...');
     try {
       const b1 = await jarA.arrayBuffer();
@@ -590,8 +559,8 @@ export default function App() {
 
       setDiffResult(parsed);
       setSelectedFile(null);
-      setSelectedType(null);
       remember('compare', `${jarA.name} → ${jarB.name}`);
+      setCompareMs(now() - started);
     } catch (e) {
       console.error(e);
       setJobError({ tool: 'compare', message: `could not compare these archives: ${e instanceof Error ? e.message : e}` });
@@ -626,7 +595,7 @@ export default function App() {
                  || diffResult.modified.find(p => p.startsWith(path + ' -> '))
                  || diffResult.added.find(p => p.startsWith(path + ' -> '))
                  || diffResult.removed.find(p => p.startsWith(path + ' -> '));
-      if (first) handleSelectFile(first, classifyPath(diffResult, first));
+      if (first) setSelectedFile(first);
       return;
     }
 
@@ -661,7 +630,7 @@ export default function App() {
                  || merged.modified.find(p => p.startsWith(pfx))
                  || merged.added.find(p => p.startsWith(pfx))
                  || merged.removed.find(p => p.startsWith(pfx));
-      if (first) selectFromDiff(merged, first);
+      if (first) setSelectedFile(first);
 
       const changed = (sub.modifiedClasses?.length || 0) + (sub.modified?.length || 0)
                     + (sub.added?.length || 0) + (sub.removed?.length || 0);
@@ -865,112 +834,6 @@ export default function App() {
     setTimeout(() => URL.revokeObjectURL(url), 60000);
   };
 
-  // Select a file, reading its content from an explicit diff (used right after a
-  // nested merge, where diffResult state hasn't propagated yet).
-  const selectFromDiff = (d: DiffResult, path: string) => {
-    setSelectedFile(path);
-    setSelectedType(classifyPath(d, path));
-    const c = d.contents[path];
-    setFileContent1(c?.content1 || '');
-    setFileContent2(c?.content2 || '');
-  };
-
-  const handleSelectFile = (path: string, type: FileStatus) => {
-    setSelectedFile(path);
-    setSelectedType(type);
-    const c = diffResult?.contents[path];
-    setFileContent1(c?.content1 || '');
-    setFileContent2(c?.content2 || '');
-  };
-
-  const stats = diffResult
-    ? {
-        modifiedClasses: diffResult.modifiedClasses.length,
-        modified:        diffResult.modified.length,
-        added:           diffResult.added.length,
-        removed:         diffResult.removed.length,
-        identical:       diffResult.identicalSourceClasses.length,
-        nested:          diffResult.nestedChanges.length,
-        nestedArchives:  diffResult.modifiedNested.length,
-        get total() {
-          return this.modifiedClasses + this.modified + this.added + this.removed + this.identical + this.nested + this.nestedArchives;
-        },
-      }
-    : null;
-
-  const breadcrumb = (path: string) => {
-    if (path.includes(' -> ')) {
-      // Show each archive hop by basename: foo.jar → bar.jar → Baz.class
-      return path.split(' -> ').map(seg => seg.split('/').pop()).join(' → ');
-    }
-    return path.replace(/\//g, ' / ');
-  };
-
-  const renderSection = (files: string[], type: FileStatus, sectionLabel: string) => {
-    if (!files.length) return null;
-    const { badge, cls } = STATUS_META[type];
-    return (
-      <div className="file-section" key={type}>
-        <div className="file-section-label">
-          <span className={`status-dot dot-${cls}`} />
-          {sectionLabel}
-          <span className="file-section-count">{files.length}</span>
-        </div>
-        {files.map(path => {
-          const name = path.includes(' -> ')
-            ? path.substring(path.lastIndexOf(' -> ') + 4).split('/').pop()
-            : path.split('/').pop();
-          return (
-            <button
-              key={path}
-              className={`file-row${selectedFile === path ? ' selected' : ''}`}
-              onClick={() => handleSelectFile(path, type)}
-              title={path}
-            >
-              <span className={`file-badge badge-${cls}`}>{badge}</span>
-              <span className="file-row-name">{name}</span>
-            </button>
-          );
-        })}
-      </div>
-    );
-  };
-
-  // Nested-archive section: each changed jar/war/ear inside the compared jars.
-  // Double-click (or the panel button) drills in and diffs its contents inline.
-  const renderNestedSection = (files: string[]) => {
-    if (!files.length) return null;
-    const { badge, cls } = STATUS_META.modifiedNested;
-    return (
-      <div className="file-section" key="modifiedNested">
-        <div className="file-section-label">
-          <span className={`status-dot dot-${cls}`} />
-          Nested Archives
-          <span className="file-section-count">{files.length}</span>
-        </div>
-        {files.map(path => {
-          const name = path.includes(' -> ')
-            ? path.substring(path.lastIndexOf(' -> ') + 4).split('/').pop()
-            : path.split('/').pop();
-          const busy = expandingNested === path;
-          const done = expandedNested.has(path);
-          return (
-            <button
-              key={path}
-              className={`file-row nested-row${selectedFile === path ? ' selected' : ''}${busy ? ' busy' : ''}`}
-              onClick={() => handleSelectFile(path, 'modifiedNested')}
-              onDoubleClick={() => compareNested(path)}
-              title={`${path} — double-click to compare contents`}
-            >
-              <span className={`file-badge badge-${cls}`}>{badge}</span>
-              <span className="file-row-name">{name}</span>
-              <span className="nested-row-hint">{busy ? '…' : done ? '✓' : '⤵'}</span>
-            </button>
-          );
-        })}
-      </div>
-    );
-  };
 
   // decompile-results derived lists
   const decompiledPaths = decompiled ? Object.keys(decompiled).sort() : [];
@@ -1480,98 +1343,21 @@ export default function App() {
       )}
 
       {/* ── Results: COMPARE ─────────────────────── */}
-      {mode === 'compare' && diffResult && stats && (
-        <>
-          <div className="stats-bar">
-            <span className="stats-total">{stats.total} files changed</span>
-            {stats.modifiedClasses > 0 && <span className="stat stat-modified-class">{stats.modifiedClasses} modified classes</span>}
-            {stats.modified       > 0 && <span className="stat stat-modified">{stats.modified} modified</span>}
-            {stats.added          > 0 && <span className="stat stat-added">+{stats.added} added</span>}
-            {stats.removed        > 0 && <span className="stat stat-removed">−{stats.removed} removed</span>}
-            {stats.identical      > 0 && <span className="stat stat-identical">{stats.identical} identical source</span>}
-            {stats.nested         > 0 && <span className="stat stat-nested">{stats.nested} nested</span>}
-            {stats.nestedArchives > 0 && <span className="stat stat-archive">{stats.nestedArchives} nested archive{stats.nestedArchives === 1 ? '' : 's'}</span>}
-          </div>
-
-          <div className="workspace">
-            <aside className="file-panel">
-              <div className="file-panel-hd">Files changed</div>
-              <div className="file-list">
-                {renderSection(diffResult.modifiedClasses,        'modifiedClasses',        'Modified Classes')}
-                {renderSection(diffResult.modified,               'modified',               'Modified'        )}
-                {renderSection(diffResult.added,                  'added',                  'Added'           )}
-                {renderSection(diffResult.removed,                'removed',                'Removed'         )}
-                {renderSection(diffResult.identicalSourceClasses, 'identicalSourceClasses', 'Identical Source')}
-                {renderSection(diffResult.nestedChanges,          'nestedChanges',          'Nested JAR'      )}
-                {renderNestedSection(diffResult.modifiedNested)}
-              </div>
-              {diffResult.modifiedNested.length > 0 && (
-                <div className="panel-hints">
-                  <span>Double-click a nested archive to diff its contents</span>
-                </div>
-              )}
-            </aside>
-
-            <div className="diff-panel">
-              {selectedFile && selectedType ? (
-                <div className="diff-view">
-                  <div className="diff-panel-hd">
-                    <span className="diff-crumb">{breadcrumb(selectedFile)}</span>
-                    <span className={`diff-type-badge badge-${STATUS_META[selectedType].cls}`}>
-                      {STATUS_META[selectedType].label}
-                    </span>
-                  </div>
-                  {selectedType === 'identicalSourceClasses' && (
-                    <div className="alert-banner">
-                      <strong>Decompiled source is identical</strong> — binary differs due to compiler version, line numbers, or debug info.
-                    </div>
-                  )}
-                  <div className="diff-body">
-                    {selectedType === 'modifiedNested' ? (
-                      <div className="diff-empty">
-                        <span className="diff-empty-icon">📦</span>
-                        <p>Nested archive differs</p>
-                        <p className="diff-empty-sub">
-                          Compare its contents to diff every changed class &amp; resource inline.
-                        </p>
-                        <button
-                          className="btn btn-primary"
-                          disabled={expandingNested === selectedFile}
-                          onClick={() => compareNested(selectedFile)}
-                        >
-                          {expandingNested === selectedFile
-                            ? 'Comparing…'
-                            : expandedNested.has(selectedFile) ? '↻ Re-open changes' : '⧉ Compare contents'}
-                        </button>
-                        {expandedNested.has(selectedFile) && (
-                          <p className="diff-empty-sub">
-                            Its changes are listed above under Modified Classes / Added / Removed.
-                          </p>
-                        )}
-                        <p className="diff-empty-sub">Tip: double-click a nested archive in the list to compare it.</p>
-                      </div>
-                    ) : (
-                      <ReactDiffViewer
-                        oldValue={fileContent1}
-                        newValue={fileContent2}
-                        splitView={true}
-                        useDarkTheme={theme === 'dark'}
-                        leftTitle={jar1File?.name}
-                        rightTitle={jar2File?.name}
-                      />
-                    )}
-                  </div>
-                </div>
-              ) : (
-                <div className="diff-empty">
-                  <span className="diff-empty-icon">⬡</span>
-                  <p>Select a file to view the diff</p>
-                  <p className="diff-empty-sub">{stats.total} files · {jar1File?.name} → {jar2File?.name}</p>
-                </div>
-              )}
-            </div>
-          </div>
-        </>
+      {mode === 'compare' && diffResult && jar1File && jar2File && (
+        <CompareView
+          key={`${jar1File.name}|${jar2File.name}|${compareMs}`}
+          diff={diffResult}
+          nameA={jar1File.name}
+          nameB={jar2File.name}
+          theme={theme}
+          selected={selectedFile}
+          onSelect={setSelectedFile}
+          onNested={compareNested}
+          expanding={expandingNested}
+          expanded={expandedNested}
+          onSwap={() => { const a = jar1File, b = jar2File; setJar1File(b); setJar2File(a); setSelectedFile(null); handleCompare(b, a); }}
+          onStatus={setCompareStatus}
+        />
       )}
 
       {/* ── Results: DECOMPILE ───────────────────── */}
@@ -1796,11 +1582,24 @@ export default function App() {
       <StatusBar
         jvm={jvm}
         left={<>
-          <span>CheerpJ 4.3 · WebAssembly</span>
+          {mode === 'compare' && diffResult ? (
+            <span>{allChanged(diffResult)} changed{compareMs !== null ? ` · compared in ${(compareMs / 1000).toFixed(1)} s` : ''}</span>
+          ) : (
+            <span>CheerpJ 4.3 · WebAssembly</span>
+          )}
           <span>local only · 0 B uploaded</span>
           {isProcessing && progressText && <span className="wb-status-progress">{progressText}</span>}
         </>}
-        right={<span>{theme}</span>}
+        right={<>
+          {mode === 'compare' && diffResult && compareStatus && (
+            <>
+              {compareStatus.change && <span>{compareStatus.change}</span>}
+              {compareStatus.lang && <span>{compareStatus.view}</span>}
+              {compareStatus.lang && <span>{compareStatus.lang}{compareStatus.lang === 'Java' ? ' · CFR' : ''}</span>}
+            </>
+          )}
+          <span>{theme}</span>
+        </>}
       />
 
       <input
