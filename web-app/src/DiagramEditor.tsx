@@ -1,17 +1,14 @@
 import { lazy, Suspense, useEffect, useRef } from 'react';
 import { isFlowchart, type Theme } from './mermaidSource';
 
-// The full-screen editor for a diagram: flowcharts get the free-position
-// canvas, sequence diagrams the lifeline editor.
+// The full-screen editor for a diagram. Both kinds edit on mermaid's own drawing.
 
 const FlowEditor = lazy(() => import('./FlowEditor'));
 const SeqEditor = lazy(() => import('./SeqEditor'));
 
-export default function DiagramEditor({ code, theme, getRendered, onSave, onClose }: {
+export default function DiagramEditor({ code, theme, onSave, onClose }: {
   code: string;
   theme: Theme;
-  /** The diagram as currently drawn, to start a flowchart from mermaid's layout. */
-  getRendered: () => SVGSVGElement | null;
   onSave: (code: string) => void;
   onClose: () => void;
 }) {
@@ -22,7 +19,7 @@ export default function DiagramEditor({ code, theme, getRendered, onSave, onClos
       <div className="md-modal dge" ref={ref} tabIndex={-1} role="dialog" aria-label="Edit diagram">
         <Suspense fallback={<div className="dge-empty">Loading editor…</div>}>
           {isFlowchart(code)
-            ? <FlowEditor code={code} theme={theme} getRendered={getRendered} onSave={onSave} onClose={onClose} />
+            ? <FlowEditor code={code} theme={theme} onSave={onSave} onClose={onClose} />
             : <SeqEditor code={code} theme={theme} onSave={onSave} onClose={onClose} />}
         </Suspense>
       </div>
