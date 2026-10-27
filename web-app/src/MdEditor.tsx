@@ -33,6 +33,10 @@ import { checkMermaid, cleanMermaidMessage, type Theme } from './mermaidSource';
 export interface MdEditorHandle {
   /** Move the cursor to the nth heading (0-based, document order) and scroll it into view. */
   revealHeading: (index: number) => void;
+  /** The document as currently typed (the change callback is debounced). */
+  getText: () => string;
+  /** Replace a range of the document, as one undoable edit. */
+  replaceRange: (from: number, to: number, insert: string) => void;
 }
 
 // ── Look ───────────────────────────────────────────────────────────────────
@@ -580,6 +584,8 @@ export default function MdEditor({
   }, []);
 
   useImperativeHandle(ref, () => ({
+    getText: () => viewRef.current?.state.doc.toString() ?? '',
+    replaceRange: (from, to, insert) => viewRef.current?.dispatch({ changes: { from, to, insert } }),
     revealHeading: (index: number) => {
       const view = viewRef.current;
       if (!view) return;

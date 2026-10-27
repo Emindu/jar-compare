@@ -1,6 +1,10 @@
-import { useContext, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
-import { ChevronDown, Maximize2, Pause, Play, SkipBack, SkipForward, SlidersHorizontal, StepBack, StepForward, X } from 'lucide-react';
-import { DiagramLinks, type DiagramEntry } from './diagramLinks';
+import { lazy, Suspense, useContext, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
+import { ChevronDown, Maximize2, Pause, PenLine, Play, SkipBack, SkipForward, SlidersHorizontal, StepBack, StepForward, X } from 'lucide-react';
+import { DiagramEdit, DiagramLinks, type DiagramEntry } from './diagramLinks';
+import { hasLayout, parseFlow, stripLayout } from './flowModel';
+import { buildScene, sceneSvg } from './flowScene';
+
+const DiagramEditor = lazy(() => import('./DiagramEditor'));
 import {
   renderMermaid, checkMermaid, cleanMermaidMessage, prepareSource, diagramType, isFlowchart, flowchartSubgraphs,
   DEFAULT_VIEW, type Theme, type ViewOptions, type MermaidError,
@@ -374,7 +378,9 @@ function TraceChip({ label, onClear, action }: { label: string; onClear: () => v
 
 // ── View options menu ──────────────────────────────────────────────────────
 
-function ViewMenu({ opts, setOpts, flow, collapsedCount, onCollapseAll, onExpandAll }: {
+function ViewMenu({ opts, setOpts, flow, collapsedCount, onCollapseAll, onExpandAll, onAutoLayout }: {
+  /** Set when the diagram has hand-placed positions: offers to drop them. */
+  onAutoLayout?: () => void;
   opts: ViewOptions;
   setOpts: (o: ViewOptions) => void;
   flow: boolean;
@@ -403,6 +409,13 @@ function ViewMenu({ opts, setOpts, flow, collapsedCount, onCollapseAll, onExpand
       </button>
       {open && (
         <span className="dg-menu dg-view-menu" onMouseLeave={() => setOpen(false)}>
+          {onAutoLayout ? (
+            <div className="dg-menu-row">
+              <span className="dg-menu-label">Positions</span>
+              <span className="dg-free-note">Placed by hand in the editor. Other Mermaid viewers lay it out automatically.</span>
+              <span className="dg-seg"><button onClick={() => { setOpen(false); onAutoLayout(); }}>Use automatic layout</button></span>
+            </div>
+          ) : <>
           {row('layout', 'Layout', [['dagre', 'Default'], ['elk', 'ELK']])}
           {flow && row('dir', 'Direction', [['', 'As written'], ['LR', '→'], ['TD', '↓'], ['RL', '←'], ['BT', '↑']])}
           {row('look', 'Look', [['classic', 'Classic'], ['handDrawn', 'Hand-drawn']])}
@@ -419,6 +432,7 @@ function ViewMenu({ opts, setOpts, flow, collapsedCount, onCollapseAll, onExpand
           {changed && (
             <button className="dg-menu-reset" onClick={() => { setOpts(DEFAULT_VIEW); onExpandAll(); }}>Reset view</button>
           )}
+          </>}
         </span>
       )}
     </span>
@@ -584,8 +598,13 @@ export function MermaidBlock({ code, theme, name }: { code: string; theme: Theme
   const countRef = useRef<HTMLSpanElement>(null);
   const entryRef = useRef<DiagramEntry | null>(null);
   const links = useContext(DiagramLinks);
+  const edit = useContext(DiagramEdit);
+  const [editing, setEditing] = useState(false);
   const kind = diagramType(code);
   const flow = isFlowchart(code);
+  // Flowcharts with hand-placed positions are drawn by our own renderer.
+  const free = flow && hasLayout(code);
+  const editable = !!edit && (flow || kind === 'sequenceDiagram');
   // A stable object: React 19 re-applies innerHTML whenever this object changes,
   // which would wipe the highlight classes set on the SVG.
   const html = useMemo(() => ({ __html: svg }), [svg]);
@@ -598,6 +617,16 @@ export function MermaidBlock({ code, theme, name }: { code: string; theme: Theme
       if (!alive) return;
       if (err) { setSvg(''); setError(err); return; }
       try {
+        if (free) {
+          await document.fonts?.ready; // labels are measured with the page font
+          const out = sceneSvg(buildScene(await parseFlow(code)), theme);
+          if (!alive) return;
+          setSvg(out);
+          setSource(code);
+          setError(null);
+          setMsgCount(0);
+          return;
+        }
         const prepared = await prepareSource(code, opts, collapsed);
         const out = await renderMermaid(prepared, theme);
         if (!alive) return;
@@ -610,7 +639,7 @@ export function MermaidBlock({ code, theme, name }: { code: string; theme: Theme
       }
     })();
     return () => { alive = false; };
-  }, [code, theme, opts, collapsed]);
+  }, [code, theme, opts, collapsed, free]);
 
   useFocus(hostRef, countRef, `${svg}|${showSource}`, sel, query, step);
 
@@ -664,7 +693,7 @@ export function MermaidBlock({ code, theme, name }: { code: string; theme: Theme
 
   // Selected subgraph → offer to fold it; selected folded node → offer to unfold it.
   const selId = sel?.startsWith('n:') ? sel.slice(2) : null;
-  const chipAction: ChipAction | null = !selId || !flow ? null
+  const chipAction: ChipAction | null = !selId || !flow || free ? null
     : collapsed.has(selId) ? { label: '⊞ Expand', title: 'Show this subgraph’s nodes again', run: () => setFold(selId, false) }
     : selected?.cluster ? { label: '⊟ Collapse', title: 'Fold this subgraph into one node', run: () => setFold(selId, true) }
     : null;
@@ -672,15 +701,25 @@ export function MermaidBlock({ code, theme, name }: { code: string; theme: Theme
   const collapseAll = async () => setCollapsed(new Set((await flowchartSubgraphs(code)).map((s) => s.id)));
 
   const startStepping = () => { setQuery(''); choose(null); setPlaying(false); setStep(0); };
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    if (step === null || (e.target as HTMLElement).tagName === 'INPUT') return;
-    const last = Math.max(0, msgCount - 1);
-    const next = e.key === 'ArrowRight' ? Math.min(last, step + 1) : e.key === 'ArrowLeft' ? Math.max(0, step - 1)
-      : e.key === 'Home' ? 0 : e.key === 'End' ? last : null;
-    if (next !== null) { e.preventDefault(); setPlaying(false); setStep(next); }
-    else if (e.key === ' ') { e.preventDefault(); setPlaying((p) => !p); }
-    else if (e.key === 'Escape') { setStep(null); setPlaying(false); }
-  };
+  // While stepping, arrows / Home / End / Space / Escape drive this diagram (inline or
+  // expanded) unless the key is typed into a field or aimed at another diagram.
+  useEffect(() => {
+    if (step === null) return;
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.closest('.cm-editor'))) return;
+      const other = t?.closest('.md-diagram');
+      if (other && other !== figRef.current) return;
+      const last = Math.max(0, msgCount - 1);
+      const next = e.key === 'ArrowRight' ? Math.min(last, step + 1) : e.key === 'ArrowLeft' ? Math.max(0, step - 1)
+        : e.key === 'Home' ? 0 : e.key === 'End' ? last : null;
+      if (next !== null) { e.preventDefault(); setPlaying(false); setStep(next); }
+      else if (e.key === ' ') { e.preventDefault(); setPlaying((p) => !p); }
+      else if (e.key === 'Escape') { setStep(null); setPlaying(false); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [step, msgCount]);
   const stepBar = step !== null && (
     <StepBar
       step={step}
@@ -699,11 +738,17 @@ export function MermaidBlock({ code, theme, name }: { code: string; theme: Theme
       collapsedCount={collapsed.size}
       onCollapseAll={collapseAll}
       onExpandAll={() => setCollapsed(new Set())}
+      onAutoLayout={free && edit ? () => edit.replace(code, stripLayout(code)) : undefined}
     />
+  );
+  const editButton = editable && svg && (
+    <button className="file-action-btn" onClick={() => { setStep(null); setPlaying(false); setEditing(true); }} title="Add, move, connect and rename by hand">
+      <PenLine size={13} aria-hidden /> Edit
+    </button>
   );
 
   return (
-    <figure className="md-diagram" ref={figRef} tabIndex={step !== null ? 0 : undefined} onKeyDown={onKeyDown}>
+    <figure className="md-diagram" ref={figRef}>
       <div className="md-diagram-bar">
         <span className="md-diagram-kind">{kind || 'diagram'}</span>
         {svg && !showSource && step === null && <SearchBox query={query} setQuery={setQuery} countRef={countRef} />}
@@ -713,6 +758,7 @@ export function MermaidBlock({ code, theme, name }: { code: string; theme: Theme
           {kind === 'sequenceDiagram' && svg && !showSource && step === null && msgCount > 0 && (
             <button className="file-action-btn" onClick={startStepping} title="Walk through the messages one by one"><Play size={13} aria-hidden /> Step</button>
           )}
+          {!showSource && editButton}
           {svg && !showSource && viewMenu}
           <button className="file-action-btn" onClick={() => setShowSource((v) => !v)}>
             {showSource ? 'Diagram' : 'Source'}
@@ -747,12 +793,27 @@ export function MermaidBlock({ code, theme, name }: { code: string; theme: Theme
           query={query}
           setQuery={setQuery}
           step={step}
-          onKeyDown={onKeyDown}
           onClose={() => setExpanded(false)}
           chipAction={chipAction}
-          controls={<>{stepBar}</>}
-          menus={<>{viewMenu}<ExportMenu hostRef={hostRef} code={code} source={source} theme={theme} name={name} /></>}
+          controls={<>
+            {stepBar}
+            {kind === 'sequenceDiagram' && step === null && msgCount > 0 && (
+              <button className="file-action-btn" onClick={startStepping} title="Walk through the messages one by one"><Play size={13} aria-hidden /> Step</button>
+            )}
+          </>}
+          menus={<>{editButton}{viewMenu}<ExportMenu hostRef={hostRef} code={code} source={source} theme={theme} name={name} /></>}
         />
+      )}
+      {editing && edit && (
+        <Suspense fallback={null}>
+          <DiagramEditor
+            code={code}
+            theme={theme}
+            getRendered={() => hostRef.current?.querySelector('svg') ?? null}
+            onSave={(next) => { if (edit.replace(code, next)) { setEditing(false); setExpanded(false); } }}
+            onClose={() => setEditing(false)}
+          />
+        </Suspense>
       )}
     </figure>
   );
@@ -830,7 +891,7 @@ function Minimap({ svg, hostRef, bodyRef, zoom }: {
 }
 
 function DiagramModal({
-  svg, sel, selLabel, toggle, clear, query, setQuery, step, onKeyDown, onClose, chipAction, controls, menus,
+  svg, sel, selLabel, toggle, clear, query, setQuery, step, onClose, chipAction, controls, menus,
 }: {
   svg: string;
   sel: string | null;
@@ -840,7 +901,6 @@ function DiagramModal({
   query: string;
   setQuery: (q: string) => void;
   step: number | null;
-  onKeyDown: (e: React.KeyboardEvent) => void;
   onClose: () => void;
   chipAction: ChipAction | null;
   controls: React.ReactNode;
@@ -855,10 +915,14 @@ function DiagramModal({
   const hostRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const countRef = useRef<HTMLSpanElement>(null);
+  const modalRef = useRef<HTMLDivElement>(null);
   const drag = useRef<{ x: number; y: number; l: number; t: number; moved: boolean } | null>(null);
 
   const html = useMemo(() => ({ __html: svg }), [svg]);
   useFocus(hostRef, countRef, svg, sel, query, step);
+
+  // Take focus so Escape and page keys go to the expanded view.
+  useEffect(() => { modalRef.current?.focus({ preventScroll: true }); }, []);
 
   const fitZoom = () => {
     const vb = hostRef.current?.querySelector('svg')?.viewBox?.baseVal;
@@ -886,7 +950,12 @@ function DiagramModal({
 
   return (
     <div className="qo-overlay md-modal-overlay" onClick={onClose}>
-      <div className="md-modal" onClick={(e) => e.stopPropagation()} onKeyDown={onKeyDown} tabIndex={-1}>
+      <div
+        className="md-modal"
+        ref={modalRef}
+        onClick={(e) => e.stopPropagation()}
+        tabIndex={-1}
+      >
         <div className="md-diagram-bar">
           <span className="md-diagram-kind">{Math.round(zoom * 100)}%</span>
           {step === null && <SearchBox query={query} setQuery={setQuery} countRef={countRef} />}
