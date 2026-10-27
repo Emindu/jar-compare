@@ -18,3 +18,11 @@ export interface DiagramLinkApi {
 }
 
 export const DiagramLinks = createContext<DiagramLinkApi | null>(null);
+
+/** Writing an edited diagram back into the document. */
+export interface DiagramEditApi {
+  /** Replace the first mermaid block whose source is `oldCode`; false when it isn't found. */
+  replace: (oldCode: string, newCode: string) => boolean;
+}
+
+export const DiagramEdit = createContext<DiagramEditApi | null>(null);

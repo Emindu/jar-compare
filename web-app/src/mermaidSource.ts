@@ -110,7 +110,7 @@ export function checkMermaid(src: string): Promise<MermaidError | null> {
 // ── Source transforms ──────────────────────────────────────────────────────
 
 /** Split off a leading YAML frontmatter block (it must stay first in the source). */
-function splitFrontmatter(src: string): { fm: string; body: string } {
+export function splitFrontmatter(src: string): { fm: string; body: string } {
   const m = /^\s*---\r?\n[\s\S]*?\r?\n---[ \t]*\r?\n/.exec(src);
   return m ? { fm: m[0], body: src.slice(m[0].length) } : { fm: '', body: src };
 }
@@ -127,17 +127,17 @@ export function diagramType(src: string): string {
 
 export const isFlowchart = (src: string) => /^(flowchart|graph)$/.test(diagramType(src));
 
-const SHAPES: Record<string, [string, string]> = {
+export const SHAPES: Record<string, [string, string]> = {
   square: ['[', ']'], round: ['(', ')'], stadium: ['([', '])'], subroutine: ['[[', ']]'],
   cylinder: ['[(', ')]'], circle: ['((', '))'], doublecircle: ['(((', ')))'], diamond: ['{', '}'],
   hexagon: ['{{', '}}'], odd: ['>', ']'], lean_right: ['[/', '/]'], lean_left: ['[\\', '\\]'],
   trapezoid: ['[/', '\\]'], inv_trapezoid: ['[\\', '/]'],
 };
 
-const quote = (s: string) => `"${s.replace(/"/g, '#quot;')}"`;
+export const quote = (s: string) => `"${s.replace(/"/g, '#quot;')}"`;
 
 /** Mermaid link syntax for a parsed edge, e.g. arrow_point + dotted → "-.->". */
-function arrow(type: string, stroke: string): string {
+export function arrow(type: string, stroke: string): string {
   if (stroke === 'invisible') return '~~~';
   const head = ({ arrow_point: '>', arrow_cross: 'x', arrow_circle: 'o' } as Record<string, string>)[type.replace('double_', '')] ?? '';
   const tail = type.startsWith('double_') ? (head === '>' ? '<' : head) : '';
@@ -229,6 +229,36 @@ export function flowchartSubgraphs(src: string): Promise<{ id: string; title: st
   return enqueue(async (mermaid) => {
     const d = await mermaid.mermaidAPI.getDiagramFromText(src);
     return ((d.db as unknown as FlowDb).getSubGraphs?.() ?? []).map((s) => ({ id: s.id, title: s.title || s.id }));
+  });
+}
+
+export interface FlowData {
+  dir: string;
+  vertices: { id: string; text: string; type: string; classes: string[]; labelType?: string }[];
+  edges: { start: string; end: string; type: string; stroke: string; text: string }[];
+  subs: { id: string; title: string; dir?: string }[];
+  /** Parent subgraph of each node and subgraph. */
+  parent: Record<string, string | undefined>;
+}
+
+/** A flowchart's nodes, edges and subgraphs as mermaid's own parser sees them. */
+export function flowchartData(src: string): Promise<FlowData> {
+  return enqueue(async (mermaid) => {
+    const d = await mermaid.mermaidAPI.getDiagramFromText(src);
+    const db = d.db as unknown as FlowDb;
+    const subs = db.getSubGraphs().map((s) => ({ id: s.id, title: s.title || s.id, dir: s.dir || undefined }));
+    const subIds = new Set(subs.map((s) => s.id));
+    const parent: Record<string, string | undefined> = {};
+    for (const n of db.getData().nodes) parent[n.id] = n.parentId || undefined;
+    return {
+      dir: db.getDirection() || 'TB',
+      vertices: [...db.getVertices().values()].filter((v) => !subIds.has(v.id)).map((v) => ({
+        id: v.id, text: v.text ?? v.id, type: v.type ?? 'square', classes: (v.classes ?? []).filter((c) => c !== 'default'), labelType: v.labelType,
+      })),
+      edges: db.getEdges().map((e) => ({ start: e.start, end: e.end, type: e.type ?? 'arrow_point', stroke: e.stroke ?? 'normal', text: e.text ?? '' })),
+      subs,
+      parent,
+    };
   });
 }
 

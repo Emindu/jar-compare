@@ -6,7 +6,7 @@ import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight, oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import type { EditorStats, MdEditorHandle } from './MdEditor';
 import { MermaidBlock } from './Diagram';
-import { DiagramLinks, type DiagramEntry, type DiagramLinkApi } from './diagramLinks';
+import { DiagramEdit, DiagramLinks, type DiagramEditApi, type DiagramEntry, type DiagramLinkApi } from './diagramLinks';
 
 type Theme = 'light' | 'dark';
 
@@ -215,6 +215,18 @@ function Section({
 
 // ── Viewer ─────────────────────────────────────────────────────────────────
 
+/** Offsets of the body of the first ```mermaid fence whose source is `code`. */
+function findMermaidFence(text: string, code: string): { from: number; to: number } | null {
+  const re = /^ {0,3}(`{3,}|~{3,})[ \t]*mermaid\b[^\n]*\n([\s\S]*?)\n {0,3}\1[`~]*[ \t]*$/gm;
+  const want = code.replace(/\s+$/, '');
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    if (m[2].replace(/\s+$/, '') !== want) continue;
+    const from = m.index + m[0].indexOf('\n') + 1;
+    return { from, to: from + m[2].length };
+  }
+  return null;
+}
+
 export interface DocStats { sections: number; diagrams: number; words: number; editor: EditorStats | null }
 
 /** Clean, standalone HTML for the rendered document (no viewer controls). */
@@ -269,6 +281,8 @@ export default function MarkdownViewer({
   const editing = view !== 'preview';
   const showPreview = view !== 'editor';
   const editorRef = useRef<MdEditorHandle>(null);
+  const onChangeRef = useRef(onChange);
+  useEffect(() => { onChangeRef.current = onChange; });
   const [toolbarHost, setToolbarHost] = useState<HTMLElement | null>(null);
   const [editorStats, setEditorStats] = useState<EditorStats | null>(null);
 
@@ -286,6 +300,19 @@ export default function MarkdownViewer({
     onSelect: (e, key) => setActiveSel((prev) => (key ? { entry: e, key } : prev?.entry === e ? null : prev)),
   }), []);
   const docRef = useRef<HTMLDivElement>(null);
+  const textRef = useRef(text);
+  useEffect(() => { textRef.current = text; }, [text]);
+  // Diagram editors write their result back into the document (through the editor when it's open).
+  const diagramEdit = useMemo<DiagramEditApi>(() => ({
+    replace: (oldCode, newCode) => {
+      const cur = editorRef.current?.getText() ?? textRef.current;
+      const at = findMermaidFence(cur, oldCode);
+      if (!at) return false;
+      if (editorRef.current) editorRef.current.replaceRange(at.from, at.to, newCode);
+      else onChangeRef.current(cur.slice(0, at.from) + newCode + cur.slice(at.to));
+      return true;
+    },
+  }), []);
 
   const totalDiagrams = useMemo(() => countDiagrams(root), [root]);
   const words = useMemo(() => (text.match(/\S+/g) || []).length, [text]);
@@ -514,6 +541,7 @@ export default function MarkdownViewer({
             )}
             {showPreview && <div className="diff-body md-doc-scroll" ref={docRef} onClick={onDocClick} onMouseOver={onDocOver} onMouseOut={onDocOut}>
               <DiagramLinks.Provider value={links}>
+              <DiagramEdit.Provider value={diagramEdit}>
               <article className="md-doc">
                 {!text.trim() && (
                   <div className="md-empty">
@@ -526,6 +554,7 @@ export default function MarkdownViewer({
                   <Section key={c.id} sec={c} theme={theme} collapsed={collapsed} toggle={toggle} />
                 ))}
               </article>
+              </DiagramEdit.Provider>
               </DiagramLinks.Provider>
             </div>}
           </div>

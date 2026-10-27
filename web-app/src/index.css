@@ -2633,3 +2633,88 @@ i.cat-jdk { background: color-mix(in srgb, var(--text-faint) 55%, var(--bg)); }
 @media (max-width: 720px) { .cp-modes { display: none; } .cp-overlay { padding-top: 56px; } }
 .wb-crumb:not(.is-last) { flex-shrink: 0; }
 .wb .md-modal:focus-visible { outline: none; }
+
+/* ── Diagram editor ── */
+.dge-overlay { z-index: 210; }
+.dge { overflow: hidden; }
+.wb .dge:focus-visible { outline: none; }
+.dge-bar { gap: 10px; flex-wrap: nowrap; }
+.dge-tools { display: flex; align-items: center; gap: 4px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.dge-sep { width: 1px; height: 18px; background: var(--line); margin: 0 4px; flex-shrink: 0; }
+.dge-zoom { min-width: 42px; text-align: center; font-family: var(--font-mono); font-size: 12px; color: var(--text-muted); }
+.dge-save { height: 28px; }
+.dge-inspector {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  min-height: 44px;
+  padding: 6px 14px;
+  border-bottom: 1px solid var(--line);
+  background: var(--sidebar);
+  font-size: 12px;
+  color: var(--text-muted);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.dge-inspector label { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.dge-inspector input, .dge-inspector select {
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 13px;
+}
+.dge-inspector input { width: 220px; }
+.dge-inspector .dge-wide input { width: min(520px, 60vw); font-family: var(--font-mono); }
+.dge-hint { white-space: nowrap; color: var(--text-faint); }
+.dge-delete { margin-left: auto; }
+.dge-stage { position: relative; flex: 1; min-height: 0; overflow: auto; background: var(--bg); }
+.dge-canvas { position: relative; margin: 0 auto; }
+.dge-svg { display: block; touch-action: none; user-select: none; -webkit-user-select: none; }
+.dge-dot { fill: var(--line-strong); }
+.dge-node { cursor: grab; }
+.dge-node:active { cursor: grabbing; }
+.dge-outline { fill: none; stroke: var(--accent); stroke-width: 2; stroke-dasharray: 5 3; pointer-events: none; }
+.dge-sub { cursor: grab; }
+.dge-sub.is-sel > rect { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 5 3; }
+.dge-edge { cursor: pointer; }
+.dge-edge-hit { fill: none; stroke: transparent; stroke-width: 14; }
+.dge-edge:hover > path:nth-child(2) { stroke: var(--accent); }
+.dge-handle { fill: var(--bg); stroke: var(--accent); stroke-width: 2; cursor: crosshair; }
+.dge-handle:hover { fill: var(--accent); }
+.dge-rubber { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 5 4; pointer-events: none; }
+.dge-marquee { fill: color-mix(in srgb, var(--accent) 10%, transparent); stroke: var(--accent); stroke-dasharray: 4 3; pointer-events: none; }
+.dge-svg.is-connecting .dge-node:hover path:first-child { stroke: var(--accent); stroke-width: 2.5; }
+.dge-rename {
+  position: absolute;
+  z-index: 2;
+  height: 30px;
+  padding: 0 8px;
+  transform: translate(-50%, -50%);
+  border: 2px solid var(--accent);
+  border-radius: var(--r-md);
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-sans);
+  font-size: 14px;
+  text-align: center;
+  box-shadow: var(--shadow);
+}
+.dge-empty { display: grid; place-items: center; gap: 12px; flex: 1; padding: 40px; color: var(--text-muted); text-align: center; }
+
+/* sequence editor */
+.dge-seq-part > g { cursor: grab; }
+.dge-seq-part.is-sel rect { stroke: var(--accent); stroke-width: 2; }
+.dge-seq-part.is-lifted, .dge-seq-msg.is-lifted, .dge-seq-other.is-lifted { opacity: 0.75; }
+.dge-lifeline { stroke: transparent; stroke-width: 22; cursor: crosshair; }
+.dge-lifeline:hover + line { stroke: var(--accent); stroke-dasharray: none; }
+.dge-seq-msg, .dge-seq-other { cursor: grab; }
+.dge-seq-msg.is-sel text { fill: var(--accent); font-weight: 600; }
+.dge-seq-other rect { fill: color-mix(in srgb, var(--raised) 70%, transparent); stroke: var(--line); }
+.dge-seq-other text { fill: var(--text-muted); }
+.dge-seq-other.is-sel rect { stroke: var(--accent); }
+.dge-drop { stroke: var(--accent); stroke-width: 2; pointer-events: none; }
+.dg-free-note { max-width: 240px; white-space: normal; font-size: 12px; color: var(--text-faint); }
