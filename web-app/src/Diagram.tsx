@@ -672,15 +672,25 @@ export function MermaidBlock({ code, theme, name }: { code: string; theme: Theme
   const collapseAll = async () => setCollapsed(new Set((await flowchartSubgraphs(code)).map((s) => s.id)));
 
   const startStepping = () => { setQuery(''); choose(null); setPlaying(false); setStep(0); };
-  const onKeyDown = (e: React.KeyboardEvent) => {
-    if (step === null || (e.target as HTMLElement).tagName === 'INPUT') return;
-    const last = Math.max(0, msgCount - 1);
-    const next = e.key === 'ArrowRight' ? Math.min(last, step + 1) : e.key === 'ArrowLeft' ? Math.max(0, step - 1)
-      : e.key === 'Home' ? 0 : e.key === 'End' ? last : null;
-    if (next !== null) { e.preventDefault(); setPlaying(false); setStep(next); }
-    else if (e.key === ' ') { e.preventDefault(); setPlaying((p) => !p); }
-    else if (e.key === 'Escape') { setStep(null); setPlaying(false); }
-  };
+  // While stepping, arrows / Home / End / Space / Escape drive this diagram (inline or
+  // expanded) unless the key is typed into a field or aimed at another diagram.
+  useEffect(() => {
+    if (step === null) return;
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.closest('.cm-editor'))) return;
+      const other = t?.closest('.md-diagram');
+      if (other && other !== figRef.current) return;
+      const last = Math.max(0, msgCount - 1);
+      const next = e.key === 'ArrowRight' ? Math.min(last, step + 1) : e.key === 'ArrowLeft' ? Math.max(0, step - 1)
+        : e.key === 'Home' ? 0 : e.key === 'End' ? last : null;
+      if (next !== null) { e.preventDefault(); setPlaying(false); setStep(next); }
+      else if (e.key === ' ') { e.preventDefault(); setPlaying((p) => !p); }
+      else if (e.key === 'Escape') { setStep(null); setPlaying(false); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [step, msgCount]);
   const stepBar = step !== null && (
     <StepBar
       step={step}
@@ -703,7 +713,7 @@ export function MermaidBlock({ code, theme, name }: { code: string; theme: Theme
   );
 
   return (
-    <figure className="md-diagram" ref={figRef} tabIndex={step !== null ? 0 : undefined} onKeyDown={onKeyDown}>
+    <figure className="md-diagram" ref={figRef}>
       <div className="md-diagram-bar">
         <span className="md-diagram-kind">{kind || 'diagram'}</span>
         {svg && !showSource && step === null && <SearchBox query={query} setQuery={setQuery} countRef={countRef} />}
@@ -747,10 +757,14 @@ export function MermaidBlock({ code, theme, name }: { code: string; theme: Theme
           query={query}
           setQuery={setQuery}
           step={step}
-          onKeyDown={onKeyDown}
           onClose={() => setExpanded(false)}
           chipAction={chipAction}
-          controls={<>{stepBar}</>}
+          controls={<>
+            {stepBar}
+            {kind === 'sequenceDiagram' && step === null && msgCount > 0 && (
+              <button className="file-action-btn" onClick={startStepping} title="Walk through the messages one by one"><Play size={13} aria-hidden /> Step</button>
+            )}
+          </>}
           menus={<>{viewMenu}<ExportMenu hostRef={hostRef} code={code} source={source} theme={theme} name={name} /></>}
         />
       )}
@@ -830,7 +844,7 @@ function Minimap({ svg, hostRef, bodyRef, zoom }: {
 }
 
 function DiagramModal({
-  svg, sel, selLabel, toggle, clear, query, setQuery, step, onKeyDown, onClose, chipAction, controls, menus,
+  svg, sel, selLabel, toggle, clear, query, setQuery, step, onClose, chipAction, controls, menus,
 }: {
   svg: string;
   sel: string | null;
@@ -840,7 +854,6 @@ function DiagramModal({
   query: string;
   setQuery: (q: string) => void;
   step: number | null;
-  onKeyDown: (e: React.KeyboardEvent) => void;
   onClose: () => void;
   chipAction: ChipAction | null;
   controls: React.ReactNode;
@@ -855,10 +868,14 @@ function DiagramModal({
   const hostRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const countRef = useRef<HTMLSpanElement>(null);
+  const modalRef = useRef<HTMLDivElement>(null);
   const drag = useRef<{ x: number; y: number; l: number; t: number; moved: boolean } | null>(null);
 
   const html = useMemo(() => ({ __html: svg }), [svg]);
   useFocus(hostRef, countRef, svg, sel, query, step);
+
+  // Take focus so Escape and page keys go to the expanded view.
+  useEffect(() => { modalRef.current?.focus({ preventScroll: true }); }, []);
 
   const fitZoom = () => {
     const vb = hostRef.current?.querySelector('svg')?.viewBox?.baseVal;
@@ -886,7 +903,12 @@ function DiagramModal({
 
   return (
     <div className="qo-overlay md-modal-overlay" onClick={onClose}>
-      <div className="md-modal" onClick={(e) => e.stopPropagation()} onKeyDown={onKeyDown} tabIndex={-1}>
+      <div
+        className="md-modal"
+        ref={modalRef}
+        onClick={(e) => e.stopPropagation()}
+        tabIndex={-1}
+      >
         <div className="md-diagram-bar">
           <span className="md-diagram-kind">{Math.round(zoom * 100)}%</span>
           {step === null && <SearchBox query={query} setQuery={setQuery} countRef={countRef} />}
