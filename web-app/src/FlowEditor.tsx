@@ -3,12 +3,14 @@ import { Group, LayoutGrid, Minus, Plus, Redo2, Trash2, Undo2 } from 'lucide-rea
 import {
   EDGE_STYLES, SHAPE_NAMES, ancestors, freshId, parseFlow, serializeFlow, type FlowModel, type Point,
 } from './flowModel';
-import { buildScene, edgeAttrs, nodeMarkup, palette, positionsFromSvg, shapePath, type Scene } from './flowScene';
+import { applyGeometry, flowGeometry, measureFlow, measuredPositions, type Geometry, type Measure } from './flowLayout';
 import { renderMermaid, type Theme } from './mermaidSource';
 
-// Edit a flowchart by hand: move nodes anywhere, add nodes and links, rename,
-// change shapes and link styles, group into subgraphs. Saving writes mermaid
-// text plus a `%% @layout` comment with the positions.
+// Edit a flowchart by hand on mermaid's own drawing (the one the document
+// shows): move nodes anywhere, add nodes and links, rename, change shapes and
+// link styles, group into subgraphs. Mermaid redraws after each structural
+// change; positions are applied on top. Saving writes mermaid text plus a
+// `%% @layout` comment with the positions.
 
 interface Sel { nodes: string[]; edge: number | null; sub: string | null }
 const NONE: Sel = { nodes: [], edge: null, sub: null };
@@ -20,41 +22,6 @@ type Drag =
 
 const GRID = 10;
 const snap = (v: number) => Math.round(v / GRID) * GRID;
-
-/** Automatic positions for a model, from a hidden mermaid render. */
-async function autoPositions(m: FlowModel, theme: Theme): Promise<Record<string, Point>> {
-  const svgText = await renderMermaid(serializeFlow(m, false), theme);
-  const host = document.createElement('div');
-  host.style.cssText = 'position:fixed;left:-20000px;top:0;visibility:hidden;width:4000px';
-  host.innerHTML = svgText;
-  document.body.appendChild(host);
-  try {
-    const svg = host.querySelector('svg');
-    if (svg) { svg.removeAttribute('style'); svg.setAttribute('width', '3000'); }
-    return svg ? positionsFromSvg(svg) : {};
-  } finally {
-    host.remove();
-  }
-}
-
-/** Give every node (and empty subgraph) a position, keeping the ones it has. */
-function placeMissing(m: FlowModel): FlowModel {
-  const pos = { ...m.pos };
-  const xs = Object.values(pos);
-  let y = xs.length ? Math.max(...xs.map((p) => p.y)) + 110 : 60;
-  let x = 80;
-  const needs = [
-    ...m.nodes.map((n) => n.id),
-    ...m.subs.filter((s) => !m.nodes.some((n) => m.parent[n.id] === s.id) && !m.subs.some((c) => m.parent[c.id] === s.id)).map((s) => s.id),
-  ];
-  for (const id of needs) {
-    if (pos[id]) continue;
-    pos[id] = { x, y };
-    x += 180;
-    if (x > 800) { x = 80; y += 110; }
-  }
-  return { ...m, pos };
-}
 
 function deleteNodes(m: FlowModel, ids: string[]): FlowModel {
   const gone = new Set(ids);
@@ -88,10 +55,9 @@ function nodesIn(m: FlowModel, sub: string): string[] {
   return m.nodes.filter((n) => ancestors(m, n.id).includes(sub)).map((n) => n.id);
 }
 
-export default function FlowEditor({ code, theme, getRendered, onSave, onClose }: {
+export default function FlowEditor({ code, theme, onSave, onClose }: {
   code: string;
   theme: Theme;
-  getRendered: () => SVGSVGElement | null;
   onSave: (code: string) => void;
   onClose: () => void;
 }) {
@@ -101,41 +67,62 @@ export default function FlowEditor({ code, theme, getRendered, onSave, onClose }
   const [rename, setRename] = useState<Rename | null>(null);
   const [drag, setDrag] = useState<Drag | null>(null);
   const [zoom, setZoom] = useState(1);
-  const [busy, setBusy] = useState(false);
   const [frame, setFrame] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
-  const svgRef = useRef<SVGSVGElement>(null);
+  const [meas, setMeas] = useState<Measure | null>(null);
+  const [renderError, setRenderError] = useState('');
+  const overlayRef = useRef<SVGSVGElement>(null);
+  const hostRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
-  const [getSvg] = useState(() => getRendered);
+  const modelRef = useRef<FlowModel | null>(null);
   const m = hist.m;
-  const p = palette(theme);
+  useEffect(() => { modelRef.current = m; }, [m]);
 
-  // Load: parse, then start from saved positions or the layout mermaid drew.
+  // Load the model.
   useEffect(() => {
     let alive = true;
-    (async () => {
-      try {
-        await document.fonts?.ready;
-        const parsed = await parseFlow(code);
-        let pos = parsed.pos;
-        if (!Object.keys(pos).length) {
-          const rendered = getSvg();
-          pos = rendered ? positionsFromSvg(rendered) : {};
-          if (!Object.keys(pos).length) pos = await autoPositions(parsed, theme);
-        }
-        if (alive) setHist({ m: placeMissing({ ...parsed, pos }), past: [], future: [], tag: '' });
-      } catch (e) {
-        if (alive) setError(String((e as Error)?.message ?? e));
-      }
-    })();
+    parseFlow(code).then(
+      (parsed) => { if (alive) setHist({ m: parsed, past: [], future: [], tag: '' }); },
+      (e) => { if (alive) setError(String((e as Error)?.message ?? e)); },
+    );
     return () => { alive = false; };
-  }, [code, theme, getSvg]);
+  }, [code]);
 
-  const scene: Scene | null = useMemo(() => (m ? buildScene(m) : null), [m]);
+  // Mermaid draws the structure (positions don't change it); the drawing is then measured.
+  const structure = m ? serializeFlow(m, false) : '';
+  useEffect(() => {
+    if (!structure) return;
+    let alive = true;
+    renderMermaid(structure, theme).then((out) => {
+      const host = hostRef.current, model = modelRef.current;
+      if (!alive || !host || !model) return;
+      host.innerHTML = out;
+      const svg = host.querySelector('svg');
+      if (!svg) return;
+      svg.style.maxWidth = 'none';
+      const mm = measureFlow(svg, model);
+      setMeas(mm);
+      setRenderError('');
+      // Anything without a saved position stays where mermaid put it.
+      const auto = measuredPositions(mm);
+      setHist((h) => {
+        if (!h.m) return h;
+        const keep = new Set([...h.m.nodes.map((n) => n.id), ...h.m.subs.filter((sg) => !h.m!.nodes.some((n) => h.m!.parent[n.id] === sg.id) && !h.m!.subs.some((c) => h.m!.parent[c.id] === sg.id)).map((sg) => sg.id)]);
+        const missing = [...keep].filter((id) => !h.m!.pos[id] && auto[id]);
+        if (!missing.length) return h;
+        const pos = { ...h.m.pos };
+        missing.forEach((id) => { pos[id] = auto[id]; });
+        return { ...h, m: { ...h.m, pos } };
+      });
+    }).catch((e) => { if (alive) setRenderError(String((e as Error)?.message ?? e).split('\n')[0]); });
+    return () => { alive = false; };
+  }, [structure, theme]);
+
+  const geo: Geometry | null = useMemo(() => (m && meas ? flowGeometry(m, meas) : null), [m, meas]);
 
   // The canvas extends well past the content so there is room to drag outward;
   // it only changes when no drag is under way so things don't jump mid-gesture.
-  if (scene && !drag) {
-    const b = scene.bounds, pad = 320;
+  if (geo && !drag) {
+    const b = geo.bounds, pad = 320;
     const x = Math.floor((b.x - pad) / 100) * 100, y = Math.floor((b.y - pad) / 100) * 100;
     const next = { x, y, w: Math.ceil((b.x + b.w + pad - x) / 100) * 100, h: Math.ceil((b.y + b.h + pad - y) / 100) * 100 };
     if (!frame || frame.x !== next.x || frame.y !== next.y || frame.w !== next.w || frame.h !== next.h) setFrame(next);
@@ -147,9 +134,9 @@ export default function FlowEditor({ code, theme, getRendered, onSave, onClose }
   useLayoutEffect(() => {
     const st = stageRef.current;
     if (!frame || !st) return;
-    if (!centred.current && scene) {
+    if (!centred.current && geo) {
       centred.current = true;
-      const b = scene.bounds;
+      const b = geo.bounds;
       st.scrollLeft = ((b.x + b.w / 2) - frame.x) * zoom - st.clientWidth / 2;
       st.scrollTop = ((b.y + b.h / 2) - frame.y) * zoom - st.clientHeight / 2;
     } else if (prevFrame.current) {
@@ -157,7 +144,16 @@ export default function FlowEditor({ code, theme, getRendered, onSave, onClose }
       st.scrollTop += (prevFrame.current.y - frame.y) * zoom;
     }
     prevFrame.current = { x: frame.x, y: frame.y };
-  }, [frame, zoom, scene]);
+  }, [frame, zoom, geo]);
+
+  // Put mermaid's elements where the model says, sized to the canvas.
+  useEffect(() => {
+    const svg = hostRef.current?.querySelector('svg');
+    if (!svg || !geo || !frame || !m) return;
+    applyGeometry(svg, m, geo, frame);
+    svg.setAttribute('width', String(frame.w * zoom));
+    svg.setAttribute('height', String(frame.h * zoom));
+  }, [geo, frame, zoom, m]);
 
   /** Apply a change as one undo step (`tag` merges consecutive edits of the same field). */
   const apply = (fn: (m: FlowModel) => FlowModel, tag = '') => {
@@ -172,7 +168,7 @@ export default function FlowEditor({ code, theme, getRendered, onSave, onClose }
   const dirty = hist.past.length > 0;
 
   const toDiagram = (e: { clientX: number; clientY: number }): Point => {
-    const ctm = svgRef.current?.getScreenCTM();
+    const ctm = overlayRef.current?.getScreenCTM();
     if (!ctm) return { x: 0, y: 0 };
     const pt = new DOMPoint(e.clientX, e.clientY).matrixTransform(ctm.inverse());
     return { x: pt.x, y: pt.y };
@@ -222,16 +218,12 @@ export default function FlowEditor({ code, theme, getRendered, onSave, onClose }
     setRename({ kind: 'sub', id, value: 'Group' });
   };
 
-  const arrange = async () => {
-    if (!m) return;
-    setBusy(true);
-    try {
-      const pos = await autoPositions(m, theme);
-      apply((x) => placeMissing({ ...x, pos: { ...pos } }));
-      centred.current = false;
-    } finally {
-      setBusy(false);
-    }
+  // Mermaid's own layout for the current structure is what the drawing was measured at.
+  const arrange = () => {
+    if (!meas) return;
+    const auto = measuredPositions(meas);
+    apply((x) => ({ ...x, pos: Object.fromEntries(Object.entries(auto).filter(([id]) => x.nodes.some((n) => n.id === id) || x.pos[id])) }));
+    centred.current = false;
   };
 
   const commitRename = () => {
@@ -344,11 +336,12 @@ export default function FlowEditor({ code, theme, getRendered, onSave, onClose }
     (document.elementFromPoint(e.clientX, e.clientY) as Element | null)?.closest('[data-node]')?.getAttribute('data-node') ?? null;
 
   const subAt = (pt: Point, exclude: Set<string>): string | null => {
-    if (!scene) return null;
+    if (!geo || !m) return null;
     let best: { id: string; depth: number } | null = null;
-    for (const s of scene.subs) {
-      if (exclude.has(s.id)) continue;
-      if (Math.abs(pt.x - s.x) <= s.w / 2 && Math.abs(pt.y - s.y) <= s.h / 2 && (!best || s.depth > best.depth)) best = { id: s.id, depth: s.depth };
+    for (const [id, b] of Object.entries(geo.clusters)) {
+      if (exclude.has(id)) continue;
+      const depth = ancestors(m, id).length;
+      if (pt.x >= b.x && pt.x <= b.x + b.w && pt.y >= b.y && pt.y <= b.y + b.h && (!best || depth > best.depth)) best = { id, depth };
     }
     return best?.id ?? null;
   };
@@ -382,11 +375,11 @@ export default function FlowEditor({ code, theme, getRendered, onSave, onClose }
       } else if (!to) {
         addNode(drag.to, drag.from);
       }
-    } else if (drag.kind === 'marquee' && scene) {
+    } else if (drag.kind === 'marquee' && geo) {
       const x0 = Math.min(drag.start.x, drag.to.x), x1 = Math.max(drag.start.x, drag.to.x);
       const y0 = Math.min(drag.start.y, drag.to.y), y1 = Math.max(drag.start.y, drag.to.y);
       if (x1 - x0 > 4 || y1 - y0 > 4) {
-        const hit = scene.nodes.filter((n) => n.x >= x0 && n.x <= x1 && n.y >= y0 && n.y <= y1).map((n) => n.id);
+        const hit = Object.entries(geo.nodes).filter(([, b]) => { const cx = b.x + b.w / 2, cy = b.y + b.h / 2; return cx >= x0 && cx <= x1 && cy >= y0 && cy <= y1; }).map(([id]) => id);
         setSel({ ...NONE, nodes: drag.add ? [...new Set([...sel.nodes, ...hit])] : hit });
       }
     }
@@ -407,12 +400,12 @@ export default function FlowEditor({ code, theme, getRendered, onSave, onClose }
       </div>
     );
   }
-  if (!m || !scene || !frame) return <div className="dge-empty">Loading diagram…</div>;
+  if (!m) return <div className="dge-empty">Loading diagram…</div>;
 
   const selNode = sel.nodes.length === 1 ? m.nodes.find((n) => n.id === sel.nodes[0]) : undefined;
   const selEdge = sel.edge !== null ? m.edges[sel.edge] : undefined;
   const selSub = sel.sub ? m.subs.find((s) => s.id === sel.sub) : undefined;
-  const sceneNode = (id: string) => scene.nodes.find((n) => n.id === id);
+  const nodeBox = (id: string) => geo?.nodes[id];
   const subChoices = (exclude: string[]) => m.subs.filter((s) => !exclude.includes(s.id) && !exclude.some((x) => ancestors(m, s.id).includes(x)));
   const styleOf = (e: { type: string; stroke: string }) => Math.max(0, EDGE_STYLES.findIndex(([t, s]) => t === e.type && s === e.stroke));
   const commonParent = (() => {
@@ -423,18 +416,19 @@ export default function FlowEditor({ code, theme, getRendered, onSave, onClose }
   // Rename box position, in stage pixels.
   const renameBox = (() => {
     if (!rename) return null;
-    if (rename.kind === 'node') { const n = sceneNode(rename.id); return n ? { x: n.x, y: n.y, w: Math.max(n.w, 140) } : null; }
-    if (rename.kind === 'sub') { const s = scene.subs.find((x) => x.id === rename.id); return s ? { x: s.x, y: s.y - s.h / 2 + 15, w: Math.max(s.w * 0.7, 140) } : null; }
-    const e = scene.edges.find((x) => x.index === rename.index);
-    return e ? { x: e.lx, y: e.ly, w: 160 } : null;
+    if (rename.kind === 'node') { const n = nodeBox(rename.id); return n ? { x: n.x + n.w / 2, y: n.y + n.h / 2, w: Math.max(n.w, 140) } : null; }
+    if (rename.kind === 'sub') { const sb = geo?.clusters[rename.id]; return sb ? { x: sb.x + sb.w / 2, y: sb.y + sb.labelH / 2 + 4, w: Math.max(sb.w * 0.7, 140) } : null; }
+    const e = geo?.edges.find((x) => x.index === rename.index);
+    return e?.label ? { x: e.label.x, y: e.label.y, w: 160 } : null;
   })();
 
-  const single = sel.nodes.length === 1 ? sceneNode(sel.nodes[0]) : undefined;
+  const single = sel.nodes.length === 1 ? nodeBox(sel.nodes[0]) : undefined;
   const handles = single ? [
-    { x: single.x + single.w / 2, y: single.y }, { x: single.x, y: single.y + single.h / 2 },
-    { x: single.x - single.w / 2, y: single.y }, { x: single.x, y: single.y - single.h / 2 },
+    { x: single.x + single.w, y: single.y + single.h / 2 }, { x: single.x + single.w / 2, y: single.y + single.h },
+    { x: single.x, y: single.y + single.h / 2 }, { x: single.x + single.w / 2, y: single.y },
   ] : [];
-  const connectFrom = drag?.kind === 'connect' ? sceneNode(drag.from) : undefined;
+  const connectBox = drag?.kind === 'connect' ? nodeBox(drag.from) : undefined;
+  const connectFrom = connectBox ? { x: connectBox.x + connectBox.w / 2, y: connectBox.y + connectBox.h / 2 } : undefined;
 
   return (
     <>
@@ -443,7 +437,7 @@ export default function FlowEditor({ code, theme, getRendered, onSave, onClose }
         <span className="dge-tools">
           <button className="file-action-btn" onClick={() => addNode(viewCentre())} title="Add a node (or double-click empty space)"><Plus size={13} aria-hidden /> Node</button>
           <button className="file-action-btn" onClick={group} title={sel.nodes.length ? 'Put the selected nodes in a subgraph' : 'Add an empty subgraph'}><Group size={13} aria-hidden /> Group</button>
-          <button className="file-action-btn" onClick={arrange} disabled={busy} title="Lay everything out automatically again"><LayoutGrid size={13} aria-hidden /> {busy ? 'Arranging…' : 'Auto-arrange'}</button>
+          <button className="file-action-btn" onClick={arrange} disabled={!meas} title="Put everything back where mermaid lays it out"><LayoutGrid size={13} aria-hidden /> Auto-arrange</button>
           <span className="dge-sep" />
           <button className="file-action-btn" onClick={undo} disabled={!hist.past.length} title="Undo (Ctrl+Z)" aria-label="Undo"><Undo2 size={13} aria-hidden /></button>
           <button className="file-action-btn" onClick={redo} disabled={!hist.future.length} title="Redo (Ctrl+Shift+Z)" aria-label="Redo"><Redo2 size={13} aria-hidden /></button>
@@ -501,6 +495,7 @@ export default function FlowEditor({ code, theme, getRendered, onSave, onClose }
         {(sel.nodes.length > 0 || sel.edge !== null) && (
           <button className="file-action-btn dge-delete" onClick={deleteSelection} title="Delete (Del)"><Trash2 size={13} aria-hidden /> Delete</button>
         )}
+        {renderError && <span className="dge-warn">Mermaid can't draw this: {renderError}</span>}
         {!sel.nodes.length && sel.edge === null && !sel.sub && (
           <span className="dge-hint">
             Drag to move · double-click empty space for a new node · drag a node's dot onto another node to link them, or onto empty space for a new linked node · double-click to rename · drag across empty space to select several
@@ -509,73 +504,65 @@ export default function FlowEditor({ code, theme, getRendered, onSave, onClose }
       </div>
 
       <div className="dge-stage" ref={stageRef} onWheel={onWheel}>
-        <div className="dge-canvas" style={{ width: frame.w * zoom, height: frame.h * zoom }}>
+        <div className="dge-canvas dge-flow-canvas" style={frame ? { width: frame.w * zoom, height: frame.h * zoom, backgroundSize: `${20 * zoom}px ${20 * zoom}px` } : undefined}>
+          <div className="dge-seq-host" ref={hostRef} />
+          {geo && frame && (
           <svg
-            ref={svgRef}
-            className={`dge-svg${drag?.kind === 'connect' ? ' is-connecting' : ''}`}
+            ref={overlayRef}
+            className={`dge-hitlayer${drag?.kind === 'connect' ? ' is-connecting' : ''}`}
             width={frame.w * zoom}
             height={frame.h * zoom}
             viewBox={`${frame.x} ${frame.y} ${frame.w} ${frame.h}`}
             onPointerDown={onBackgroundDown}
             onPointerMove={onMove}
             onPointerUp={onUp}
-            onDoubleClick={(e) => { if (e.target === svgRef.current || (e.target as Element).classList.contains('dge-grid')) addNode(toDiagram(e)); }}
-            fontFamily="IBM Plex Sans, system-ui, sans-serif"
+            onDoubleClick={(e) => { if (e.target === overlayRef.current || (e.target as Element).classList.contains('dge-hit-bg')) addNode(toDiagram(e)); }}
           >
             <defs>
-              <pattern id="dge-dots" width={GRID * 2} height={GRID * 2} patternUnits="userSpaceOnUse">
-                <circle cx="1" cy="1" r="1" className="dge-dot" />
-              </pattern>
-              <marker id="dge-m-pt" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill={p.line} /></marker>
-              <marker id="dge-m-x" viewBox="0 0 10 10" refX="7" refY="5" markerWidth="9" markerHeight="9" orient="auto-start-reverse"><path d="M2,1 L8,9 M8,1 L2,9" stroke={p.line} strokeWidth="1.6" /></marker>
-              <marker id="dge-m-o" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><circle cx="5" cy="5" r="3.6" fill="none" stroke={p.line} strokeWidth="1.5" /></marker>
+              <marker id="dge-m-pt" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" className="dge-rubber-head" /></marker>
             </defs>
-            <rect className="dge-grid" x={frame.x} y={frame.y} width={frame.w} height={frame.h} fill="url(#dge-dots)" />
+            <rect className="dge-hit-bg" x={frame.x} y={frame.y} width={frame.w} height={frame.h} />
 
-            {scene.subs.map((s) => (
-              <g key={s.id} className={`dge-sub${sel.sub === s.id ? ' is-sel' : ''}`} onPointerDown={(e) => onSubDown(e, s.id)} onDoubleClick={(e) => { e.stopPropagation(); setRename({ kind: 'sub', id: s.id, value: m.subs.find((x) => x.id === s.id)?.title ?? '' }); }}>
-                <rect x={s.x - s.w / 2} y={s.y - s.h / 2} width={s.w} height={s.h} rx="4" fill={p.cluster} stroke={p.clusterStroke} />
-                <text x={s.x} y={s.y - s.h / 2 + 20} textAnchor="middle" fill={p.text} fontSize="13">{s.title}</text>
+            {Object.entries(geo.clusters).map(([id, b]) => (
+              <g key={id}>
+                <rect className="dge-hit dge-hit-sub" x={b.x} y={b.y} width={b.w} height={b.labelH + 12}
+                  onPointerDown={(e) => onSubDown(e, id)}
+                  onDoubleClick={(e) => { e.stopPropagation(); setRename({ kind: 'sub', id, value: m.subs.find((x) => x.id === id)?.title ?? '' }); }}>
+                  <title>Drag to move the group · double-click to rename</title>
+                </rect>
+                {sel.sub === id && <rect className="dge-sel" x={b.x - 3} y={b.y - 3} width={b.w + 6} height={b.h + 6} />}
               </g>
             ))}
 
-            {scene.edges.map((e) => {
-              const a = edgeAttrs(e, p, 'dge-m');
+            {geo.edges.map((e) => {
               const isSel = sel.edge === e.index;
               return (
-                <g key={e.key} className={`dge-edge${isSel ? ' is-sel' : ''}`}
+                <g key={e.index}
                   onPointerDown={(ev) => { if (ev.button) return; ev.stopPropagation(); setRename(null); setSel({ ...NONE, edge: e.index }); }}
                   onDoubleClick={(ev) => { ev.stopPropagation(); setRename({ kind: 'edge', index: e.index, value: m.edges[e.index]?.label ?? '' }); }}
                 >
-                  <path d={e.d} className="dge-edge-hit" />
-                  <path d={e.d} fill="none" stroke={isSel ? 'var(--accent)' : a.stroke} strokeWidth={a['stroke-width']} strokeDasharray={a['stroke-dasharray']} markerEnd={a['marker-end']} markerStart={a['marker-start']} />
-                  {e.label.length > 0 && (
-                    <g>
-                      <rect x={e.lx - e.lw / 2} y={e.ly - e.lh / 2} width={e.lw} height={e.lh} rx="2" fill={p.labelBg} />
-                      <text textAnchor="middle" fill={p.text} fontSize="13">
-                        {e.label.map((l, i) => <tspan key={i} x={e.lx} y={e.ly - e.lh / 2 + 16 + i * 19}>{l}</tspan>)}
-                      </text>
-                    </g>
-                  )}
+                  <path d={e.d} className="dge-edge-hit dge-hit-edge" />
+                  {e.labelBox && <rect className="dge-hit" x={e.labelBox.x} y={e.labelBox.y} width={e.labelBox.w} height={e.labelBox.h} />}
+                  {isSel && <path d={e.d} className="dge-sel-edge" />}
                 </g>
               );
             })}
 
-            {scene.nodes.map((n) => {
-              const isSel = sel.nodes.includes(n.id);
+            {Object.entries(geo.nodes).map(([id, b]) => {
+              const isSel = sel.nodes.includes(id);
               return (
-                <g key={n.id} data-node={n.id} className={`dge-node${isSel ? ' is-sel' : ''}`} transform={`translate(${n.x},${n.y})`}
-                  onPointerDown={(e) => onNodeDown(e, n.id)}
-                  onDoubleClick={(e) => { e.stopPropagation(); setRename({ kind: 'node', id: n.id, value: m.nodes.find((x) => x.id === n.id)?.label ?? '' }); }}
-                >
-                  <g dangerouslySetInnerHTML={{ __html: nodeMarkup(n, p) }} />
-                  {isSel && <path className="dge-outline" d={shapePath(n.shape, n.w + 8, n.h + 8)} />}
+                <g key={id}>
+                  <rect data-node={id} className="dge-hit dge-hit-node" x={b.x} y={b.y} width={b.w} height={b.h}
+                    onPointerDown={(e) => onNodeDown(e, id)}
+                    onDoubleClick={(e) => { e.stopPropagation(); setRename({ kind: 'node', id, value: m.nodes.find((x) => x.id === id)?.label ?? '' }); }}
+                  />
+                  {isSel && <rect className="dge-sel" x={b.x - 4} y={b.y - 4} width={b.w + 8} height={b.h + 8} />}
                 </g>
               );
             })}
 
             {handles.map((h, i) => (
-              <circle key={i} className="dge-handle" cx={h.x} cy={h.y} r={6} onPointerDown={(e) => onHandleDown(e, single!.id)}>
+              <circle key={i} className="dge-handle" cx={h.x} cy={h.y} r={6} onPointerDown={(e) => onHandleDown(e, sel.nodes[0])}>
                 <title>Drag onto another node to link them</title>
               </circle>
             ))}
@@ -587,8 +574,10 @@ export default function FlowEditor({ code, theme, getRendered, onSave, onClose }
               <rect className="dge-marquee" x={Math.min(drag.start.x, drag.to.x)} y={Math.min(drag.start.y, drag.to.y)} width={Math.abs(drag.to.x - drag.start.x)} height={Math.abs(drag.to.y - drag.start.y)} />
             )}
           </svg>
+          )}
+          {!geo && !renderError && <div className="dge-empty">Drawing…</div>}
 
-          {rename && renameBox && (
+          {rename && renameBox && frame && (
             <input
               className="dge-rename"
               autoFocus

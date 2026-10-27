@@ -2673,21 +2673,11 @@ i.cat-jdk { background: color-mix(in srgb, var(--text-faint) 55%, var(--bg)); }
 .dge-delete { margin-left: auto; }
 .dge-stage { position: relative; flex: 1; min-height: 0; overflow: auto; background: var(--bg); }
 .dge-canvas { position: relative; margin: 0 auto; }
-.dge-svg { display: block; touch-action: none; user-select: none; -webkit-user-select: none; }
-.dge-dot { fill: var(--line-strong); }
-.dge-node { cursor: grab; }
-.dge-node:active { cursor: grabbing; }
-.dge-outline { fill: none; stroke: var(--accent); stroke-width: 2; stroke-dasharray: 5 3; pointer-events: none; }
-.dge-sub { cursor: grab; }
-.dge-sub.is-sel > rect { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 5 3; }
-.dge-edge { cursor: pointer; }
 .dge-edge-hit { fill: none; stroke: transparent; stroke-width: 14; }
-.dge-edge:hover > path:nth-child(2) { stroke: var(--accent); }
 .dge-handle { fill: var(--bg); stroke: var(--accent); stroke-width: 2; cursor: crosshair; }
 .dge-handle:hover { fill: var(--accent); }
 .dge-rubber { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 5 4; pointer-events: none; }
 .dge-marquee { fill: color-mix(in srgb, var(--accent) 10%, transparent); stroke: var(--accent); stroke-dasharray: 4 3; pointer-events: none; }
-.dge-svg.is-connecting .dge-node:hover path:first-child { stroke: var(--accent); stroke-width: 2.5; }
 .dge-rename {
   position: absolute;
   z-index: 2;
@@ -2705,17 +2695,6 @@ i.cat-jdk { background: color-mix(in srgb, var(--text-faint) 55%, var(--bg)); }
 }
 .dge-empty { display: grid; place-items: center; gap: 12px; flex: 1; padding: 40px; color: var(--text-muted); text-align: center; }
 
-/* sequence editor */
-.dge-seq-part > g { cursor: grab; }
-.dge-seq-part.is-sel rect { stroke: var(--accent); stroke-width: 2; }
-.dge-seq-part.is-lifted, .dge-seq-msg.is-lifted, .dge-seq-other.is-lifted { opacity: 0.75; }
-.dge-lifeline { stroke: transparent; stroke-width: 22; cursor: crosshair; }
-.dge-lifeline:hover + line { stroke: var(--accent); stroke-dasharray: none; }
-.dge-seq-msg, .dge-seq-other { cursor: grab; }
-.dge-seq-msg.is-sel text { fill: var(--accent); font-weight: 600; }
-.dge-seq-other rect { fill: color-mix(in srgb, var(--raised) 70%, transparent); stroke: var(--line); }
-.dge-seq-other text { fill: var(--text-muted); }
-.dge-seq-other.is-sel rect { stroke: var(--accent); }
 .dge-drop { stroke: var(--accent); stroke-width: 2; pointer-events: none; }
 .dg-free-note { max-width: 240px; white-space: normal; font-size: 12px; color: var(--text-faint); }
 
@@ -2736,3 +2715,13 @@ i.cat-jdk { background: color-mix(in srgb, var(--text-faint) 55%, var(--bg)); }
 .dge-warn { white-space: nowrap; color: var(--mod); }
 .dge-wrap { height: 26px; padding: 0 6px; border: 1px solid var(--border); border-radius: 6px; background: transparent; color: var(--text-muted); font-family: var(--font-sans); font-size: 0.76rem; }
 .dge-canvas .dge-empty { position: absolute; inset: 0; }
+
+/* flowchart editor on mermaid's drawing */
+.dge-flow-canvas { background-image: radial-gradient(var(--line-strong) 1px, transparent 1px); }
+.dge-hit-node { cursor: grab; }
+.dge-hit-node:active { cursor: grabbing; }
+.dge-hit-sub { cursor: grab; }
+.dge-hit-edge { cursor: pointer; }
+.dge-hit-edge:hover { stroke: color-mix(in srgb, var(--accent) 22%, transparent); }
+.dge-sel-edge { fill: none; stroke: var(--accent); stroke-width: 3; pointer-events: none; opacity: 0.85; }
+.dge-hitlayer.is-connecting .dge-hit-node:hover { fill: color-mix(in srgb, var(--accent) 16%, transparent); stroke: var(--accent); stroke-width: 2; }

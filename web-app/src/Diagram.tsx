@@ -1,8 +1,8 @@
 import { lazy, Suspense, useContext, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { ChevronDown, Maximize2, Pause, PenLine, Play, SkipBack, SkipForward, SlidersHorizontal, StepBack, StepForward, X } from 'lucide-react';
 import { DiagramEdit, DiagramLinks, type DiagramEntry } from './diagramLinks';
-import { hasLayout, parseFlow, stripLayout } from './flowModel';
-import { buildScene, sceneSvg } from './flowScene';
+import { hasLayout, stripLayout } from './flowModel';
+import { renderFreeFlow } from './flowLayout';
 
 const DiagramEditor = lazy(() => import('./DiagramEditor'));
 import {
@@ -618,8 +618,7 @@ export function MermaidBlock({ code, theme, name }: { code: string; theme: Theme
       if (err) { setSvg(''); setError(err); return; }
       try {
         if (free) {
-          await document.fonts?.ready; // labels are measured with the page font
-          const out = sceneSvg(buildScene(await parseFlow(code)), theme);
+          const out = await renderFreeFlow(code, theme);
           if (!alive) return;
           setSvg(out);
           setSource(code);
@@ -809,7 +808,6 @@ export function MermaidBlock({ code, theme, name }: { code: string; theme: Theme
           <DiagramEditor
             code={code}
             theme={theme}
-            getRendered={() => hostRef.current?.querySelector('svg') ?? null}
             onSave={(next) => { if (edit.replace(code, next)) { setEditing(false); setExpanded(false); } }}
             onClose={() => setEditing(false)}
           />
