@@ -1,8 +1,6 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-// Self-hosted IBM Plex (latin) for the home page: no third-party font requests.
-import '@fontsource/ibm-plex-sans-condensed/latin-600.css'
-import '@fontsource/ibm-plex-sans-condensed/latin-700.css'
+// Self-hosted IBM Plex (latin): no third-party font requests.
 import '@fontsource/ibm-plex-sans/latin-400.css'
 import '@fontsource/ibm-plex-sans/latin-500.css'
 import '@fontsource/ibm-plex-sans/latin-600.css'

@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import ReactDiffViewer from 'react-diff-viewer-continued';
 import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight, oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import java from 'react-syntax-highlighter/dist/esm/languages/prism/java';
@@ -16,9 +15,19 @@ import javascript from 'react-syntax-highlighter/dist/esm/languages/prism/javasc
 import css from 'react-syntax-highlighter/dist/esm/languages/prism/css';
 import JSZip from 'jszip';
 import { parseJfr, type JfrResult } from './jfr';
-import Profiler from './Profiler';
-import MarkdownWorkspace from './MarkdownWorkspace';
+import Profiler, { type ProfileStatus } from './Profiler';
+import MarkdownWorkspace, { type MdActions, type MdStatus } from './MarkdownWorkspace';
 import Intake from './Intake';
+import CompareView, { type CompareCommands, type CompareStatus } from './CompareView';
+import { allEntries, CHANGE_META, CHANGE_OF, type DiffResult } from './diffModel';
+import CommandPalette, { type PaletteItem } from './CommandPalette';
+import { kindOf, letterFor, packageOf, parseOutline, parseManifest, splitArchive, type SourceKind } from './decompileModel';
+import { ArrowLeft, ArrowRight, GitCompare, FileDown, ClipboardCopy } from 'lucide-react';
+import Home from './Home';
+import { TitleBar, ActivityBar, StatusBar, ThemeButton } from './Workbench';
+import { IS_MAC, MOD, TOOLS, type Tool, type JvmState } from './shell';
+import { loadRecent, addRecent, clearRecent, type RecentItem } from './recent';
+import { Download, RotateCcw, ExternalLink, Search, X } from 'lucide-react';
 import './index.css';
 
 SyntaxHighlighter.registerLanguage('java', java);
@@ -33,22 +42,6 @@ SyntaxHighlighter.registerLanguage('sql', sql);
 SyntaxHighlighter.registerLanguage('bash', bash);
 SyntaxHighlighter.registerLanguage('javascript', javascript);
 SyntaxHighlighter.registerLanguage('css', css);
-
-interface FileContent {
-  content1?: string;
-  content2?: string;
-}
-
-interface DiffResult {
-  added: string[];
-  removed: string[];
-  modified: string[];
-  modifiedClasses: string[];
-  identicalSourceClasses: string[];
-  nestedChanges: string[];
-  modifiedNested: string[];
-  contents: Record<string, FileContent>;
-}
 
 interface DecompiledFile {
   encoding: 'utf8' | 'base64';
@@ -81,19 +74,18 @@ interface CheerpJGlobal {
 
 declare const window: Window & typeof globalThis & CheerpJGlobal;
 
-type Mode = 'compare' | 'decompile' | 'profile' | 'markdown';
+type Mode = Tool;
 
-type FileStatus = 'modifiedClasses' | 'modified' | 'added' | 'removed' | 'identicalSourceClasses' | 'nestedChanges' | 'modifiedNested';
-
-const STATUS_META: Record<FileStatus, { badge: string; cls: string; label: string }> = {
-  modifiedClasses:        { badge: 'M', cls: 'modified-class', label: 'Modified Class' },
-  modified:               { badge: 'M', cls: 'modified',       label: 'Modified'        },
-  added:                  { badge: 'A', cls: 'added',          label: 'Added'           },
-  removed:                { badge: 'R', cls: 'removed',        label: 'Removed'         },
-  identicalSourceClasses: { badge: '~', cls: 'identical',      label: 'Identical Source'},
-  nestedChanges:          { badge: 'N', cls: 'nested',         label: 'Nested JAR'      },
-  modifiedNested:         { badge: '⧉', cls: 'archive',        label: 'Nested Archive'  },
-};
+// One shared CheerpJ initialization: callers that arrive while it is still
+// starting wait for the same promise instead of racing ahead of it.
+let jvmInit: Promise<void> | null = null;
+function startJvm(): Promise<void> {
+  if (!jvmInit) {
+    window.__cheerpjInitializing = true;
+    jvmInit = window.cheerpjInit().catch(e => { jvmInit = null; throw e; });
+  }
+  return jvmInit;
+}
 
 const JAR_PATH = '/app' + import.meta.env.BASE_URL + 'webcomparer.jar';
 
@@ -151,54 +143,6 @@ function langForPath(p: string): string {
 
 // Extract an outline (classes / methods / fields) from decompiled Java source.
 // Heuristic: works on CFR's 4-space-indented output.
-function parseOutline(content: string): { kind: 'class' | 'method' | 'field'; name: string; line: number }[] {
-  const out: { kind: 'class' | 'method' | 'field'; name: string; line: number }[] = [];
-  if (!content) return out;
-  const lines = content.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    const ln = lines[i];
-    let m = ln.match(/^(?:public |private |protected |final |abstract |static |sealed )*(class|interface|enum|record|@interface)\s+([A-Za-z_$][\w$]*)/);
-    if (m) { out.push({ kind: 'class', name: m[2], line: i + 1 }); continue; }
-    if (!/^ {4}\S/.test(ln)) continue;
-    m = ln.match(/(?:^| )([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*(?:throws [\w$., ]+)?\s*[{;]/);
-    if (m && !['if', 'for', 'while', 'switch', 'catch', 'return', 'new', 'synchronized'].includes(m[1])) {
-      out.push({ kind: 'method', name: m[1], line: i + 1 });
-      continue;
-    }
-    m = ln.match(/^ {4}(?:public |private |protected |static |final |volatile |transient )*[\w$.<>\[\], ]+\s+([A-Za-z_$][\w$]*)\s*(?:=|;)/);
-    if (m) out.push({ kind: 'field', name: m[1], line: i + 1 });
-  }
-  return out;
-}
-
-// Lightweight fuzzy subsequence scorer for Quick Open. Returns null if the
-// query isn't a subsequence of the target; higher score = better match.
-function fuzzyScore(query: string, target: string): number | null {
-  const q = query.toLowerCase();
-  const t = target.toLowerCase();
-  let qi = 0, score = 0, streak = 0, last = -2;
-  for (let i = 0; i < t.length && qi < q.length; i++) {
-    if (t[i] === q[qi]) {
-      streak = i === last + 1 ? streak + 1 : 0;
-      score += 1 + streak;
-      if (i === 0 || /[^A-Za-z0-9]/.test(t[i - 1])) score += 2; // word-boundary bonus
-      last = i;
-      qi++;
-    }
-  }
-  return qi === q.length ? score : null;
-}
-
-// Which bucket a path currently lives in (for re-selecting a drilled-in file).
-function classifyPath(d: DiffResult, path: string): FileStatus {
-  if (d.modifiedClasses.includes(path)) return 'modifiedClasses';
-  if (d.modified.includes(path)) return 'modified';
-  if (d.added.includes(path)) return 'added';
-  if (d.removed.includes(path)) return 'removed';
-  if (d.identicalSourceClasses.includes(path)) return 'identicalSourceClasses';
-  return 'modifiedNested';
-}
-
 // Merge a nested archive's sub-comparison into the parent diff. Every sub-path
 // is prefixed with `pfx` (e.g. "BOOT-INF/lib/foo.jar -> "); modified classes are
 // split into real source changes vs. identical-decompiled-source, matching the
@@ -227,50 +171,42 @@ function mergeNestedDiff(prev: DiffResult, pfx: string, sub: DiffResult): DiffRe
   };
 }
 
-// How-to procedures shown on the start page; the active tab's comes first.
-const PROCEDURES: Record<'compare' | 'decompile' | 'profile', { title: string; steps: { key: string; text: React.ReactNode }[] }> = {
-  compare: {
-    title: 'How to compare two JAR files',
-    steps: [
-      { key: 'Load', text: <>Put the original build in <var>a/</var> and the new one in <var>b/</var>: drag them in, or click a row to choose a file.</> },
-      { key: 'Diff', text: <>Entries are hashed and matched by path. Archives nested inside, such as <code>BOOT-INF/lib</code> or <code>WEB-INF/lib</code>, are opened and compared too.</> },
-      { key: 'Read', text: <>Modified classes are decompiled and shown side by side, so the change reads as Java rather than bytecode.</> },
-    ],
-  },
-  decompile: {
-    title: 'How to decompile a JAR file',
-    steps: [
-      { key: 'Switch', text: <>Open the <em>Decompile</em> tab and load a single <code>.jar</code>, <code>.war</code> or <code>.ear</code>.</> },
-      { key: 'Extract', text: <>Every class goes through the CFR decompiler; resources are copied out unchanged.</> },
-      { key: 'Keep', text: <>Browse the package tree with syntax highlighting, then download the whole tree as a <code>.zip</code>.</> },
-    ],
-  },
-  profile: {
-    title: 'How to analyze a JFR recording',
-    steps: [
-      { key: 'Record', text: <>Start the JVM with <code>-XX:StartFlightRecording=duration=60s,filename=app.jfr,settings=profile</code>, or attach later with <code>jcmd &lt;pid&gt; JFR.start</code>.</> },
-      { key: 'Open', text: <>Load the <code>.jfr</code> file on the <em>Profile</em> tab. It is parsed in the page; nothing is sent anywhere.</> },
-      { key: 'Read', text: <>Sort hot methods by self or total samples, and click one to find it in the flame graph.</> },
-    ],
-  },
-};
+// Timestamps for measuring a job (kept outside the component; jobs run in handlers).
+const now = () => performance.now();
 
-function procedureOrder(mode: Mode): ('compare' | 'decompile' | 'profile')[] {
-  const all = ['compare', 'decompile', 'profile'] as const;
-  const first = mode === 'decompile' || mode === 'profile' ? mode : 'compare';
-  return [first, ...all.filter((k) => k !== first)];
-}
+const allChanged = (d: DiffResult) =>
+  d.modifiedClasses.length + d.modified.length + d.added.length + d.removed.length
+  + d.identicalSourceClasses.length + d.nestedChanges.length + d.modifiedNested.length;
 
 export default function App() {
-  const [mode, setMode] = useState<Mode>('compare');
+  const [mode, setMode] = useState<Mode>('home');
+  const [jvm, setJvm] = useState<JvmState>(() => (typeof window.cheerpjInit === 'undefined' ? 'unavailable' : 'loading'));
+  const [busyTool, setBusyTool] = useState<Tool | null>(null);
+  const [jobError, setJobError] = useState<{ tool: Tool; message: string } | null>(null);
+  const [recent, setRecent] = useState<RecentItem[]>(loadRecent);
+  const [compareMs, setCompareMs] = useState<number | null>(null);
+  const [decompileMs, setDecompileMs] = useState<number | null>(null);
+  const [explorerView, setExplorerView] = useState<'packages' | 'files'>('packages');
+  const [srcTabs, setSrcTabs] = useState<string[]>([]);
+  const explorerFilterRef = useRef<HTMLInputElement>(null);
+  const [compareStatus, setCompareStatus] = useState<CompareStatus | null>(null);
+  const [profileStatus, setProfileStatus] = useState<ProfileStatus | null>(null);
+  const flameExport = useRef<(() => void) | null>(null);
+  const [mdStatus, setMdStatus] = useState<MdStatus | null>(null);
+  const mdActions = useRef<MdActions | null>(null);
+  const [mdIncoming, setMdIncoming] = useState<{ id: number; name: string; text: string } | null>(null);
+  const openPicker = useRef<HTMLInputElement>(null);
+  const remember = (kind: Exclude<Tool, 'home'>, label: string) => setRecent(addRecent(kind, label));
 
   // shared
   const [isProcessing, setIsProcessing] = useState(false);
   const [progressText, setProgressText] = useState('');
   const [theme, setTheme] = useState<'light' | 'dark'>(() => {
-    const saved = localStorage.getItem('theme');
-    if (saved === 'light' || saved === 'dark') return saved;
-    return 'light';
+    try {
+      const saved = localStorage.getItem('theme');
+      if (saved === 'light' || saved === 'dark') return saved;
+    } catch { /* storage unavailable */ }
+    return window.matchMedia?.('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
   });
 
   // compare state
@@ -278,9 +214,6 @@ export default function App() {
   const [jar2File, setJar2File] = useState<File | null>(null);
   const [diffResult, setDiffResult] = useState<DiffResult | null>(null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
-  const [selectedType, setSelectedType] = useState<FileStatus | null>(null);
-  const [fileContent1, setFileContent1] = useState('');
-  const [fileContent2, setFileContent2] = useState('');
   const [expandingNested, setExpandingNested] = useState<string | null>(null); // nested archive being compared
   const [expandedNested, setExpandedNested] = useState<Set<string>>(new Set()); // nested archives already drilled into
 
@@ -304,10 +237,8 @@ export default function App() {
   // IDE navigation: history, quick-open, outline, toast
   const [nav, setNav] = useState<{ stack: string[]; index: number }>({ stack: [], index: -1 });
   const navRef = useRef(nav);
-  const [quickOpen, setQuickOpen] = useState(false);
-  const [quickQuery, setQuickQuery] = useState('');
-  const [quickIndex, setQuickIndex] = useState(0);
-  const [outlineOpen, setOutlineOpen] = useState(false);
+  const [palette, setPalette] = useState<string | null>(null); // open with this query
+  const compareCmds = useRef<CompareCommands | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
   const navHoverElRef = useRef<HTMLElement | null>(null);
@@ -323,7 +254,7 @@ export default function App() {
 
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
-    localStorage.setItem('theme', theme);
+    try { localStorage.setItem('theme', theme); } catch { /* storage unavailable */ }
   }, [theme]);
 
   const toggleTheme = () => setTheme(t => (t === 'dark' ? 'light' : 'dark'));
@@ -364,6 +295,7 @@ export default function App() {
   const openFile = (path: string | null) => {
     setSelectedSource(path);
     if (!path) return;
+    setSrcTabs(tabs => (tabs.includes(path) ? tabs : [...tabs, path]));
     const { stack, index } = navRef.current;
     if (stack[index] === path) return;
     const next = stack.slice(0, index + 1);
@@ -415,14 +347,9 @@ export default function App() {
     }
   };
 
-  // Global keyboard shortcuts: Quick Open, Back/Forward, Escape.
+  // Decompile shortcuts: Back/Forward.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if ((e.ctrlKey || e.metaKey) && (e.key === 'p' || e.key === 'P')) {
-        if (decompiled) { e.preventDefault(); setQuickOpen(o => !o); setQuickQuery(''); setQuickIndex(0); }
-        return;
-      }
-      if (e.key === 'Escape') { setQuickOpen(false); setOutlineOpen(false); return; }
       if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); navBack(); return; }
       if (e.altKey && e.key === 'ArrowRight') { e.preventDefault(); navForward(); return; }
     };
@@ -442,55 +369,99 @@ export default function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const resetAll = () => {
+  const resetCompare = () => {
     setDiffResult(null);
     setJar1File(null);
     setJar2File(null);
     setSelectedFile(null);
-    setSelectedType(null);
     setExpandingNested(null);
     setExpandedNested(new Set());
+  };
+
+  const resetCompareResults = () => {
+    setDiffResult(null);
+    setSelectedFile(null);
+    setExpandingNested(null);
+    setExpandedNested(new Set());
+  };
+
+  const resetDecompile = () => {
     setDecompiled(null);
     setDecompiledMeta(null);
     setSrcJar(null);
     setSelectedSource(null);
+    setSrcTabs([]);
     setCollapsedDirs(new Set());
     setExpandingArchive(null);
     setSourceQuery('');
-    setJfrFile(null);
-    setJfrResult(null);
-    setProgressText('');
     navRef.current = { stack: [], index: -1 };
     setNav({ stack: [], index: -1 });
-    setQuickOpen(false);
-    setOutlineOpen(false);
-    setToast(null);
   };
 
+  /** From Profile: open a class's decompiled source at a line, if it has been decompiled. */
+  const openSourceFromProfile = (fqnClass: string, line: number): boolean => {
+    const base = fqnClass.split('$')[0].replace(/\./g, '/') + '.java';
+    const path = decompiled && Object.keys(decompiled).find(p => p === base || p.endsWith('/' + base));
+    if (!path) {
+      showToast(`Decompile the archive that contains ${fqnClass.split('.').pop()} to open its source`);
+      return false;
+    }
+    setMode('decompile');
+    openFile(path);
+    setTimeout(() => flashLine(line), 150);
+    return true;
+  };
+
+  const resetProfile = () => {
+    setJfrFile(null);
+    setJfrResult(null);
+  };
+
+  // Tools keep their state when you switch between them; each has its own "New".
   const switchMode = (m: Mode) => {
     if (m === mode) return;
     setMode(m);
-    resetAll();
+    setToast(null);
   };
 
-  // Back to the landing screen (clears results and returns to the default mode).
-  const goHome = () => {
-    resetAll();
-    setMode('compare');
+  /** Send files to the right tool by extension; returns an error message if none apply. */
+  const routeFiles = (files: File[]): string | null => {
+    const is = (f: File, re: RegExp) => re.test(f.name.toLowerCase());
+    const archives = files.filter(f => is(f, /\.(jar|war|ear)$/));
+    const jfr = files.find(f => is(f, /\.jfr$/));
+    const md = files.find(f => is(f, /\.(md|markdown)$/));
+    setJobError(null);
+    if (archives.length >= 2) {
+      setJar1File(archives[0]);
+      setJar2File(archives[1]);
+      setMode('compare');
+      handleCompare(archives[0], archives[1]);
+    } else if (archives.length === 1) {
+      setSrcJar(archives[0]);
+      setMode('decompile');
+      handleDecompile(archives[0]);
+    } else if (jfr) {
+      setJfrFile(jfr);
+      setMode('profile');
+      handleProfile(jfr);
+    } else if (md) {
+      md.text().then(text => {
+        setMdIncoming({ id: Date.now(), name: md.name, text });
+        remember('markdown', md.name);
+        setMode('markdown');
+      });
+    } else {
+      return `${files.length === 1 ? files[0].name : `None of these ${files.length} files`} can't be opened here. Use .jar, .war, .ear, .jfr or .md.`;
+    }
+    return null;
   };
 
+  // Start the JVM in the background so it is warm by the time a file arrives.
   useEffect(() => {
-    const init = async () => {
-      try {
-        if (typeof window.cheerpjInit !== 'undefined' && !window.__cheerpjInitializing) {
-          window.__cheerpjInitializing = true;
-          await window.cheerpjInit();
-        }
-      } catch (e) {
-        console.error('Failed to initialize CheerpJ', e);
-      }
-    };
-    init();
+    if (typeof window.cheerpjInit === 'undefined') return;
+    startJvm()
+      .then(() => setJvm('ready'))
+      .catch(e => { console.error('Failed to initialize CheerpJ', e); setJvm('error'); });
   }, []);
 
   // Run a Java main class and capture the JSON it prints between markers.
@@ -516,19 +487,29 @@ export default function App() {
     });
 
   const ensureCheerpJ = async () => {
-    if (typeof window.cheerpjInit !== 'undefined' && !window.__cheerpjInitializing) {
-      window.__cheerpjInitializing = true;
-      await window.cheerpjInit();
+    if (typeof window.cheerpjInit === 'undefined') {
+      setJvm('unavailable');
+      throw new Error('the in-browser Java runtime did not load. It is downloaded once from cjrtnc.leaningtech.com; check your connection or content blocker, then reload');
+    }
+    try {
+      await startJvm(); // waits for an initialization already in progress
+      setJvm('ready');
+    } catch (e) {
+      setJvm('error');
+      throw e;
     }
   };
 
-  const handleCompare = async () => {
-    if (!jar1File || !jar2File) return;
+  const handleCompare = async (jarA: File | null = jar1File, jarB: File | null = jar2File) => {
+    if (!jarA || !jarB) return;
     setIsProcessing(true);
+    setBusyTool('compare');
+    setJobError(null);
+    const started = now();
     setProgressText('Preparing environments...');
     try {
-      const b1 = await jar1File.arrayBuffer();
-      const b2 = await jar2File.arrayBuffer();
+      const b1 = await jarA.arrayBuffer();
+      const b2 = await jarB.arrayBuffer();
       await ensureCheerpJ();
       window.cheerpOSAddStringFile('/str/jar1.jar', new Uint8Array(b1));
       window.cheerpOSAddStringFile('/str/jar2.jar', new Uint8Array(b2));
@@ -565,12 +546,14 @@ export default function App() {
 
       setDiffResult(parsed);
       setSelectedFile(null);
-      setSelectedType(null);
+      remember('compare', `${jarA.name} → ${jarB.name}`);
+      setCompareMs(now() - started);
     } catch (e) {
       console.error(e);
-      alert('Error processing jars: ' + e);
+      setJobError({ tool: 'compare', message: `could not compare these archives: ${e instanceof Error ? e.message : e}` });
     } finally {
       setIsProcessing(false);
+      setBusyTool(null);
       setProgressText('');
     }
   };
@@ -599,7 +582,7 @@ export default function App() {
                  || diffResult.modified.find(p => p.startsWith(path + ' -> '))
                  || diffResult.added.find(p => p.startsWith(path + ' -> '))
                  || diffResult.removed.find(p => p.startsWith(path + ' -> '));
-      if (first) handleSelectFile(first, classifyPath(diffResult, first));
+      if (first) setSelectedFile(first);
       return;
     }
 
@@ -634,7 +617,7 @@ export default function App() {
                  || merged.modified.find(p => p.startsWith(pfx))
                  || merged.added.find(p => p.startsWith(pfx))
                  || merged.removed.find(p => p.startsWith(pfx));
-      if (first) selectFromDiff(merged, first);
+      if (first) setSelectedFile(first);
 
       const changed = (sub.modifiedClasses?.length || 0) + (sub.modified?.length || 0)
                     + (sub.added?.length || 0) + (sub.removed?.length || 0);
@@ -648,12 +631,16 @@ export default function App() {
     }
   };
 
-  const handleDecompile = async () => {
-    if (!srcJar) return;
+  const handleDecompile = async (jar: File | null = srcJar) => {
+    if (!jar) return;
     setIsProcessing(true);
+    setBusyTool('decompile');
+    setJobError(null);
+    setSrcTabs([]);
+    const started = now();
     setProgressText('Preparing environment...');
     try {
-      const buf = await srcJar.arrayBuffer();
+      const buf = await jar.arrayBuffer();
       await ensureCheerpJ();
       window.cheerpOSAddStringFile('/str/input.jar', new Uint8Array(buf));
 
@@ -668,11 +655,14 @@ export default function App() {
       // auto-select first .java source for instant feedback
       const firstJava = Object.keys(files).sort().find(p => p.endsWith('.java'));
       openFile(firstJava || Object.keys(files).sort()[0] || null);
+      remember('decompile', jar.name);
+      setDecompileMs(now() - started);
     } catch (e) {
       console.error(e);
-      alert('Error decompiling jar: ' + e);
+      setJobError({ tool: 'decompile', message: `could not decompile this archive: ${e instanceof Error ? e.message : e}` });
     } finally {
       setIsProcessing(false);
+      setBusyTool(null);
       setProgressText('');
     }
   };
@@ -737,20 +727,24 @@ export default function App() {
     }
   };
 
-  const handleProfile = async () => {
-    if (!jfrFile) return;
+  const handleProfile = async (recording: File | null = jfrFile) => {
+    if (!recording) return;
     setIsProcessing(true);
+    setBusyTool('profile');
+    setJobError(null);
     setProgressText('Parsing recording…');
     try {
       // JFR parsing is pure client-side data work — no CheerpJ/JVM needed.
-      const buf = await jfrFile.arrayBuffer();
+      const buf = await recording.arrayBuffer();
       const result = parseJfr(buf);
       setJfrResult(result);
+      remember('profile', recording.name);
     } catch (e) {
       console.error(e);
-      alert('Could not parse this .jfr file: ' + e);
+      setJobError({ tool: 'profile', message: `could not read this recording: ${e instanceof Error ? e.message : e}` });
     } finally {
       setIsProcessing(false);
+      setBusyTool(null);
       setProgressText('');
     }
   };
@@ -772,6 +766,16 @@ export default function App() {
     a.remove();
     URL.revokeObjectURL(url);
   };
+
+  // Cmd/Ctrl+Shift+S downloads the decompiled sources.
+  useEffect(() => {
+    if (mode !== 'decompile' || !decompiled) return;
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && !e.altKey && e.code === 'KeyS') { e.preventDefault(); downloadZip(); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
 
   // ── Single decompiled-file actions ──────────────────────────────────────
   const mimeForPath = (p: string): string => {
@@ -819,123 +823,8 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
-  const openInNewTab = (path: string, f: DecompiledFile) => {
-    // Java/text open nicer as plain text so the browser shows source, not downloads.
-    const blob = f.encoding === 'utf8'
-      ? new Blob([f.content], { type: 'text/plain;charset=utf-8' })
-      : fileToBlob(path, f);
-    const url = URL.createObjectURL(blob);
-    window.open(url, '_blank', 'noopener,noreferrer');
-    // Revoke later so the new tab has time to load.
-    setTimeout(() => URL.revokeObjectURL(url), 60000);
-  };
 
-  // Select a file, reading its content from an explicit diff (used right after a
-  // nested merge, where diffResult state hasn't propagated yet).
-  const selectFromDiff = (d: DiffResult, path: string) => {
-    setSelectedFile(path);
-    setSelectedType(classifyPath(d, path));
-    const c = d.contents[path];
-    setFileContent1(c?.content1 || '');
-    setFileContent2(c?.content2 || '');
-  };
 
-  const handleSelectFile = (path: string, type: FileStatus) => {
-    setSelectedFile(path);
-    setSelectedType(type);
-    const c = diffResult?.contents[path];
-    setFileContent1(c?.content1 || '');
-    setFileContent2(c?.content2 || '');
-  };
-
-  const stats = diffResult
-    ? {
-        modifiedClasses: diffResult.modifiedClasses.length,
-        modified:        diffResult.modified.length,
-        added:           diffResult.added.length,
-        removed:         diffResult.removed.length,
-        identical:       diffResult.identicalSourceClasses.length,
-        nested:          diffResult.nestedChanges.length,
-        nestedArchives:  diffResult.modifiedNested.length,
-        get total() {
-          return this.modifiedClasses + this.modified + this.added + this.removed + this.identical + this.nested + this.nestedArchives;
-        },
-      }
-    : null;
-
-  const breadcrumb = (path: string) => {
-    if (path.includes(' -> ')) {
-      // Show each archive hop by basename: foo.jar → bar.jar → Baz.class
-      return path.split(' -> ').map(seg => seg.split('/').pop()).join(' → ');
-    }
-    return path.replace(/\//g, ' / ');
-  };
-
-  const renderSection = (files: string[], type: FileStatus, sectionLabel: string) => {
-    if (!files.length) return null;
-    const { badge, cls } = STATUS_META[type];
-    return (
-      <div className="file-section" key={type}>
-        <div className="file-section-label">
-          <span className={`status-dot dot-${cls}`} />
-          {sectionLabel}
-          <span className="file-section-count">{files.length}</span>
-        </div>
-        {files.map(path => {
-          const name = path.includes(' -> ')
-            ? path.substring(path.lastIndexOf(' -> ') + 4).split('/').pop()
-            : path.split('/').pop();
-          return (
-            <button
-              key={path}
-              className={`file-row${selectedFile === path ? ' selected' : ''}`}
-              onClick={() => handleSelectFile(path, type)}
-              title={path}
-            >
-              <span className={`file-badge badge-${cls}`}>{badge}</span>
-              <span className="file-row-name">{name}</span>
-            </button>
-          );
-        })}
-      </div>
-    );
-  };
-
-  // Nested-archive section: each changed jar/war/ear inside the compared jars.
-  // Double-click (or the panel button) drills in and diffs its contents inline.
-  const renderNestedSection = (files: string[]) => {
-    if (!files.length) return null;
-    const { badge, cls } = STATUS_META.modifiedNested;
-    return (
-      <div className="file-section" key="modifiedNested">
-        <div className="file-section-label">
-          <span className={`status-dot dot-${cls}`} />
-          Nested Archives
-          <span className="file-section-count">{files.length}</span>
-        </div>
-        {files.map(path => {
-          const name = path.includes(' -> ')
-            ? path.substring(path.lastIndexOf(' -> ') + 4).split('/').pop()
-            : path.split('/').pop();
-          const busy = expandingNested === path;
-          const done = expandedNested.has(path);
-          return (
-            <button
-              key={path}
-              className={`file-row nested-row${selectedFile === path ? ' selected' : ''}${busy ? ' busy' : ''}`}
-              onClick={() => handleSelectFile(path, 'modifiedNested')}
-              onDoubleClick={() => compareNested(path)}
-              title={`${path} — double-click to compare contents`}
-            >
-              <span className={`file-badge badge-${cls}`}>{badge}</span>
-              <span className="file-row-name">{name}</span>
-              <span className="nested-row-hint">{busy ? '…' : done ? '✓' : '⤵'}</span>
-            </button>
-          );
-        })}
-      </div>
-    );
-  };
 
   // decompile-results derived lists
   const decompiledPaths = decompiled ? Object.keys(decompiled).sort() : [];
@@ -951,7 +840,7 @@ export default function App() {
   const metaItems: { label: string; value: string }[] = [];
   if (decompiledMeta) {
     const m = decompiledMeta;
-    if (m.javaVersion)           metaItems.push({ label: '☕ Java', value: m.javaVersion });
+    if (m.javaVersion)           metaItems.push({ label: 'Java', value: m.javaVersion });
     if (m.multiRelease)          metaItems.push({ label: 'Multi-Release', value: 'yes' });
     if (m.buildDate)             metaItems.push({ label: 'Built', value: m.buildDate });
     if (m.buildJdk)              metaItems.push({ label: 'Build JDK', value: m.buildJdk });
@@ -967,6 +856,19 @@ export default function App() {
     if (m.signed)                metaItems.push({ label: 'Signed', value: 'yes' });
   }
   const selectedDecompiledFile = selectedSource && decompiled ? decompiled[selectedSource] : null;
+
+  // What each Java source declares (class, interface, record, enum, annotation).
+  const sourceKinds = useMemo(() => {
+    const m = new Map<string, SourceKind>();
+    if (!decompiled) return m;
+    for (const [path, f] of Object.entries(decompiled)) {
+      if (path.endsWith('.java') && f.encoding === 'utf8') {
+        const k = kindOf(f.content);
+        if (k) m.set(path, k.kind);
+      }
+    }
+    return m;
+  }, [decompiled]);
 
   // Index of local decompiled classes: simple name -> paths, plus a set of all
   // .java paths. Used to resolve Ctrl/Cmd-click "go to class" navigation.
@@ -1104,38 +1006,6 @@ export default function App() {
     }
   };
 
-  // Quick Open (Ctrl/Cmd+P) fuzzy results over all decompiled files.
-  const quickResults = useMemo(() => {
-    if (!decompiled) return [] as { path: string }[];
-    const paths = Object.keys(decompiled);
-    const q = quickQuery.trim();
-    if (!q) {
-      return paths.filter(p => p.endsWith('.java')).sort().slice(0, 60).map(path => ({ path }));
-    }
-    const scored: { path: string; score: number }[] = [];
-    for (const p of paths) {
-      const name = p.split('/').pop() || p;
-      const sName = fuzzyScore(q, name);
-      const sPath = fuzzyScore(q, p);
-      const score = Math.max(sName != null ? sName + 5 : -1, sPath != null ? sPath : -1);
-      if (score >= 0) scored.push({ path: p, score });
-    }
-    scored.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
-    return scored.slice(0, 60);
-  }, [quickQuery, decompiled]);
-
-  const onQuickKey = (e: React.KeyboardEvent) => {
-    if (e.key === 'ArrowDown') { e.preventDefault(); setQuickIndex(i => Math.min(i + 1, quickResults.length - 1)); }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); setQuickIndex(i => Math.max(i - 1, 0)); }
-    else if (e.key === 'Enter') {
-      e.preventDefault();
-      const r = quickResults[Math.min(quickIndex, quickResults.length - 1)];
-      if (r) { openFile(r.path); setQuickOpen(false); }
-    } else if (e.key === 'Escape') {
-      setQuickOpen(false);
-    }
-  };
-
   // Breadcrumb: clicking a package segment reveals/expands it in the tree.
   const revealDir = (dir: string) => {
     setSourceQuery('');
@@ -1154,8 +1024,8 @@ export default function App() {
       const dir = parts.slice(0, i + 1).join('/');
       return (
         <React.Fragment key={i}>
-          <button className="crumb-seg" onClick={() => revealDir(dir)} title={`Reveal ${dir} in tree`}>{seg}</button>
-          <span className="crumb-sep">/</span>
+          <button className="crumb-seg" onClick={() => { setExplorerView('files'); revealDir(dir); }} title={`Reveal ${dir} in the file tree`}>{seg}</button>
+          <span className="crumb-sep">›</span>
         </React.Fragment>
       );
     });
@@ -1209,15 +1079,112 @@ export default function App() {
       onClick={() => openFile(path)}
       title={path}
     >
-      <span className={`file-badge badge-${path.endsWith('.java') ? 'added' : 'nested'}`}>
-        {path.endsWith('.java') ? 'J' : 'R'}
-      </span>
+      <span className={`dv-letter ${letterFor(path, sourceKinds.get(path)).tone}`}>{letterFor(path, sourceKinds.get(path)).letter}</span>
       <span className="search-row-text">
         <span className="file-row-name">{path.split('/').pop()}</span>
         <span className="search-row-path">{path}</span>
       </span>
       {count > 0 && <span className="search-count">{count}</span>}
     </button>
+  );
+
+
+  // Inspector data for the open source.
+  const selectedText = selectedDecompiledFile?.encoding === 'utf8' ? selectedDecompiledFile.content : '';
+  const classInfo = useMemo(() => {
+    if (!selectedSource?.endsWith('.java') || !selectedText) return null;
+    const k = kindOf(selectedText);
+    return { kind: k?.kind ?? 'class', header: k?.header ?? '', name: k?.name ?? '', lines: selectedText.split('\n').length, size: selectedText.length };
+  }, [selectedSource, selectedText]);
+  const referencedBy = useMemo(() => {
+    if (!decompiled || !classInfo?.name) return [];
+    const re = new RegExp(`\\b${classInfo.name.replace(/\$/g, '\\$')}\\b`);
+    const out: string[] = [];
+    for (const [path, f] of Object.entries(decompiled)) {
+      if (path === selectedSource || !path.endsWith('.java') || f.encoding !== 'utf8') continue;
+      if (re.test(f.content)) out.push(path);
+      if (out.length >= 12) break;
+    }
+    return out.sort();
+  }, [decompiled, classInfo, selectedSource]);
+  const manifest = useMemo(() => {
+    const f = decompiled?.['META-INF/MANIFEST.MF'];
+    return f && f.encoding === 'utf8' ? parseManifest(f.content).filter(e => e.key !== 'Manifest-Version' && e.key !== 'Created-By') : [];
+  }, [decompiled]);
+
+  // Packages view: sources grouped by package, then resources, nested archives and META-INF.
+  const packageGroups = useMemo(() => {
+    const pkgs = new Map<string, string[]>();
+    const resources: string[] = [];
+    const archives = new Map<string, string[]>();
+    const meta: string[] = [];
+    for (const path of decompiledPaths) {
+      const { archive, inner } = splitArchive(path);
+      if (path.endsWith('.java')) {
+        const key = packageOf(path);
+        pkgs.set(key, [...(pkgs.get(key) ?? []), path]);
+      } else if (isArchivePath(path) && !archive) {
+        const dir = path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '(root)';
+        archives.set(dir, [...(archives.get(dir) ?? []), path]);
+      } else if (!archive && inner.startsWith('META-INF/')) {
+        meta.push(path);
+      } else if (!archive) {
+        resources.push(path);
+      }
+    }
+    return {
+      packages: [...pkgs.entries()].sort(([a], [b]) => a.localeCompare(b)),
+      resources,
+      archives: [...archives.entries()].sort(([a], [b]) => a.localeCompare(b)),
+      meta,
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [decompiled]);
+
+  const explorerRow = (path: string, depth: number, label?: string, hint?: string) => {
+    const kind = sourceKinds.get(path);
+    const { letter, tone } = letterFor(path, kind);
+    const isArchive = isArchivePath(path);
+    const busy = expandingArchive === path;
+    return (
+      <button
+        key={path}
+        className={`dv-row${selectedSource === path ? ' is-selected' : ''}`}
+        style={{ paddingLeft: 12 + depth * 14 }}
+        onClick={() => openFile(path)}
+        onDoubleClick={isArchive ? () => decompileNested(path) : undefined}
+        title={isArchive ? `${path}: double-click to decompile` : path}
+      >
+        <span className={`dv-letter ${tone}`}>{letter}</span>
+        <span className="dv-name">{label ?? path.split('/').pop()}</span>
+        {(hint || (kind && kind !== 'class') || isArchive) && (
+          <span className="dv-hint">{busy ? 'decompiling…' : hint ?? (isArchive ? 'nested ↵' : kind)}</span>
+        )}
+      </button>
+    );
+  };
+  const explorerGroup = (key: string, label: string, count: string | null, rows: React.ReactNode) => {
+    const isClosed = collapsedDirs.has(key);
+    return (
+      <div key={key}>
+        <button className="dv-row is-group" style={{ paddingLeft: 12 }} onClick={() => toggleDir(key)} aria-expanded={!isClosed}>
+          <span className="tree-caret">{isClosed ? '▸' : '▾'}</span>
+          <span className="dv-name">{label}</span>
+          {count && <span className="dv-hint">{count}</span>}
+        </button>
+        {!isClosed && rows}
+      </div>
+    );
+  };
+  const renderPackages = () => (
+    <>
+      {packageGroups.packages.map(([pkg, paths]) =>
+        explorerGroup(`pkg:${pkg}`, pkg, null, paths.sort().map(p => explorerRow(p, 1, p.split('/').pop()!.replace(/\.java$/, '')))))}
+      {packageGroups.resources.length > 0 && explorerGroup('grp:resources', 'resources', null, packageGroups.resources.map(p => explorerRow(p, 1, p)))}
+      {packageGroups.archives.map(([dir, paths]) =>
+        explorerGroup(`arc:${dir}`, dir, `${paths.length} jar${paths.length === 1 ? '' : 's'}`, paths.map(p => explorerRow(p, 1))))}
+      {packageGroups.meta.length > 0 && explorerGroup('grp:meta', 'META-INF', null, packageGroups.meta.map(p => explorerRow(p, 1, p.slice('META-INF/'.length))))}
+    </>
   );
 
   // Recursively render a package/path tree. Single-child package chains are
@@ -1252,7 +1219,6 @@ export default function App() {
               title={folder.path}
             >
               <span className="tree-caret">{collapsed ? '▸' : '▾'}</span>
-              <span className="tree-icon">🗀</span>
               <span className="tree-name">{label}</span>
             </button>
             {!collapsed && renderTree(folder, depth + 1)}
@@ -1272,7 +1238,7 @@ export default function App() {
               title={`${child.path} (decompiled)`}
             >
               <span className="tree-caret">{collapsed ? '▸' : '▾'}</span>
-              <span className="tree-icon">📦</span>
+              <span className="dv-letter k-archive">J</span>
               <span className="tree-name">{child.name}</span>
             </button>
             {!collapsed && renderTree(child, depth + 1)}
@@ -1280,7 +1246,6 @@ export default function App() {
         );
       }
 
-      const isJava = child.path.endsWith('.java');
       const isArchive = isArchivePath(child.path);
       const busy = expandingArchive === child.path;
       return (
@@ -1292,570 +1257,604 @@ export default function App() {
           onDoubleClick={isArchive ? () => decompileNested(child.path) : undefined}
           title={isArchive ? `${child.path} — double-click to decompile` : child.path}
         >
-          <span className={`file-badge badge-${isArchive ? 'archive' : isJava ? 'added' : 'nested'}`}>
-            {isArchive ? '⧉' : isJava ? 'J' : 'R'}
-          </span>
+          <span className={`dv-letter ${letterFor(child.path, sourceKinds.get(child.path)).tone}`}>{letterFor(child.path, sourceKinds.get(child.path)).letter}</span>
           <span className="tree-name">{child.name}</span>
-          {isArchive && <span className="tree-archive-hint">{busy ? '…' : '⤵'}</span>}
+          {isArchive && <span className="tree-archive-hint">{busy ? 'decompiling…' : 'nested ↵'}</span>}
         </button>
       );
     });
   };
 
   // The Markdown tab is a workspace from the start (no upload step).
-  const hasResults = !!diffResult || !!decompiled || !!jfrResult || mode === 'markdown';
+  // Shortcuts that work everywhere: open a file, switch tool with 1–4.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      const typing = !!t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || !!t.closest('.cm-editor'));
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'o') {
+        e.preventDefault();
+        openPicker.current?.click();
+        return;
+      }
+      // Cmd/Ctrl+K (or P) opens the palette, unless the editor used it (Ctrl+K inserts a link there).
+      if ((e.metaKey || e.ctrlKey) && !e.shiftKey && !e.altKey && /^[kp]$/i.test(e.key) && !e.defaultPrevented) {
+        e.preventDefault();
+        setPalette(p => (p === null ? '' : null));
+        return;
+      }
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && !e.altKey && e.code === 'KeyL') {
+        e.preventDefault();
+        setTheme(t => (t === 'dark' ? 'light' : 'dark'));
+        return;
+      }
+      if (typing || e.metaKey || e.ctrlKey || e.altKey) return;
+      const tool = TOOLS.find(x => x.key === e.key);
+      if (tool) { e.preventDefault(); setMode(tool.id); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  // In Decompile, / focuses the explorer filter.
+  useEffect(() => {
+    if (mode !== 'decompile' || !decompiled) return;
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (e.key !== '/' || e.metaKey || e.ctrlKey || e.altKey) return;
+      if (t && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+      e.preventDefault();
+      explorerFilterRef.current?.focus();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [mode, decompiled]);
+
+  const shortcuts = [
+    { label: 'Command palette', keys: [`${MOD}K`] },
+    { label: 'Open file', keys: [`${MOD}O`] },
+    { label: 'Switch tool', keys: ['1 – 4'] },
+    { label: 'Filter files', keys: ['/'] },
+    { label: 'Next / previous file', keys: ['j', 'k'] },
+    { label: 'Next / previous change', keys: ['n', 'p'] },
+  ];
+
+  // ── Command palette ──
+  const SHIFT_MOD = IS_MAC ? '⇧⌘' : 'Ctrl+Shift+';
+  const ALT = IS_MAC ? '⌥' : 'Alt+';
+  const dirOf = (path: string) => {
+    const inner = path.split(' -> ').pop() || path;
+    return inner.includes('/') ? inner.slice(0, inner.lastIndexOf('/')).replace(/\//g, '.') : '';
+  };
+  const paletteClasses = (): PaletteItem[] => {
+    if (mode === 'decompile' && decompiled) {
+      return decompiledPaths.map(path => {
+        const lf = letterFor(path, sourceKinds.get(path));
+        const name = path.split('/').pop() || path;
+        return { id: path, title: name.replace(/\.java$/, ''), detail: packageOf(path), mark: { text: lf.letter, tone: lf.tone }, match: path, run: () => openFile(path) };
+      });
+    }
+    if (mode === 'compare' && diffResult) {
+      return allEntries(diffResult).map(({ path, status }) => {
+        const ch = CHANGE_OF[status];
+        const name = (path.split(' -> ').pop() || path).split('/').pop() || path;
+        const dir = dirOf(path);
+        return {
+          id: path,
+          title: name.replace(/\.(java|class)$/, ''),
+          detail: `${dir ? `${dir} · ` : ''}${CHANGE_META[ch].glyph} ${CHANGE_META[ch].label}`,
+          mark: { text: CHANGE_META[ch].glyph, tone: `g-${ch}` },
+          match: path,
+          run: () => setSelectedFile(path),
+        };
+      });
+    }
+    return [];
+  };
+  // Every method and field of the decompiled sources (built when first searched).
+  const paletteSymbols = mode === 'decompile' && decompiled ? () => {
+    const out: PaletteItem[] = [];
+    for (const path of javaPaths) {
+      const f = decompiled[path];
+      if (!f || f.encoding !== 'utf8') continue;
+      const cls = (path.split('/').pop() || path).replace(/\.java$/, '');
+      for (const o of parseOutline(f.content)) {
+        if (o.kind === 'class') continue;
+        const [params, ret] = o.detail.split(' : ');
+        out.push({
+          id: `${path}:${o.line}:${o.name}`,
+          title: o.kind === 'method' ? `${cls}.${o.name}${params}` : `${cls}.${o.name}`,
+          detail: `${o.kind === 'method' ? (ret ? `returns ${ret} · ` : '') : `${o.detail.replace(/^: /, '')} · `}line ${o.line}`,
+          mark: { text: o.kind === 'method' ? 'm' : 'f', tone: `cp-${o.kind}` },
+          match: `${cls}.${o.name}`,
+          run: () => { openFile(path); setTimeout(() => flashLine(o.line), 150); },
+        });
+      }
+    }
+    return out;
+  } : undefined;
+  const paletteCommands = (): PaletteItem[] => {
+    const out: PaletteItem[] = [];
+    const add = (title: string, detail: string, run: () => void, keys?: string) => out.push({ id: `${detail}:${title}`, title, detail, run, keys });
+    if (mode === 'compare' && diffResult) {
+      add('Next change', 'compare', () => compareCmds.current?.nextChange(), 'n');
+      add('Previous change', 'compare', () => compareCmds.current?.prevChange(), 'p');
+      add('Next file', 'compare', () => compareCmds.current?.nextFile(), 'j');
+      add('Previous file', 'compare', () => compareCmds.current?.prevFile(), 'k');
+      add('Toggle split / unified diff', 'compare', () => compareCmds.current?.toggleView(), `${ALT}S`);
+      add('Filter files', 'compare', () => compareCmds.current?.focusFilter(), '/');
+      add('New comparison', 'compare', resetCompare);
+    }
+    if (mode === 'decompile' && decompiled) {
+      add('Download sources.zip', 'decompile', downloadZip, `${SHIFT_MOD}S`);
+      add('Go back', 'decompile', navBack, `${ALT}←`);
+      add('Go forward', 'decompile', navForward, `${ALT}→`);
+      add('Filter explorer', 'decompile', () => explorerFilterRef.current?.focus(), '/');
+      add('Decompile another file', 'decompile', resetDecompile);
+    }
+    if (mode === 'profile' && jfrResult) {
+      add('Export flame graph as SVG', 'profile', () => flameExport.current?.());
+      add('Open another recording', 'profile', resetProfile);
+    }
+    if (mode === 'markdown') {
+      add('Save .md', 'markdown', () => mdActions.current?.save(), `${MOD}S`);
+      add('Export HTML', 'markdown', () => mdActions.current?.exportHtml());
+    }
+    for (const t of TOOLS) if (t.id !== mode) add(`Switch to ${t.name}`, 'tools', () => switchMode(t.id), t.key);
+    if (mode !== 'home') add('Go home', 'tools', () => switchMode('home'));
+    add('Open file…', 'file', () => openPicker.current?.click(), `${MOD}O`);
+    add('Toggle light / dark theme', 'view', toggleTheme, `${SHIFT_MOD}L`);
+    return out;
+  };
+
+  const toolName = (t: Tool) => (t === 'home' ? 'home' : t);
+  const crumbs: string[] = [toolName(mode)];
+  if (mode === 'compare' && diffResult && jar1File && jar2File) crumbs.push(`${jar1File.name} → ${jar2File.name}`);
+  if (mode === 'decompile' && decompiled && srcJar) crumbs.push(srcJar.name);
+  if (mode === 'profile' && jfrResult && jfrFile) crumbs.push(jfrFile.name);
+  if (mode === 'markdown' && mdStatus) crumbs.push(mdStatus.name);
+
+  const titleActions = (
+    <>
+      {mode === 'home' && (
+        <a className="wb-text-btn" href="https://github.com/Emindu/jar-compare" target="_blank" rel="noopener noreferrer">
+          GitHub <ExternalLink size={13} />
+        </a>
+      )}
+      {mode === 'compare' && diffResult && (
+        <button className="wb-btn wb-btn-primary" onClick={resetCompare}><RotateCcw size={14} /> New comparison</button>
+      )}
+      {mode === 'decompile' && decompiled && (
+        <>
+          <button className="wb-btn" onClick={resetDecompile}><RotateCcw size={14} /> New file</button>
+          <button className="wb-btn wb-btn-primary" onClick={downloadZip}><Download size={14} /> sources.zip</button>
+        </>
+      )}
+      {mode === 'profile' && jfrResult && (
+        <>
+          <button className="wb-btn" onClick={() => flameExport.current?.()}><FileDown size={14} /> Export SVG</button>
+          <button className="wb-btn wb-btn-primary" onClick={resetProfile}><RotateCcw size={14} /> Open recording</button>
+        </>
+      )}
+      {mode === 'markdown' && (
+        <>
+          <button className="wb-btn" onClick={() => mdActions.current?.exportHtml()}><FileDown size={14} /> Export HTML</button>
+          <button className="wb-btn wb-btn-primary" onClick={() => mdActions.current?.save()} title={`Download the Markdown file (${MOD}S)`}>
+            <Download size={14} /> Save .md <kbd className="wb-btn-kbd">{MOD}S</kbd>
+          </button>
+        </>
+      )}
+      <ThemeButton theme={theme} onToggle={toggleTheme} />
+    </>
+  );
+
+  /** The empty state of a tool: what it does and the input panel. */
+  const toolStart = (tool: 'compare' | 'decompile' | 'profile', title: string, lede: React.ReactNode, intake: React.ReactNode) => (
+    <div className="wb-scroll">
+      <div className="tool-start">
+        <p className="home-path">~/{tool}</p>
+        <h1 className="tool-start-title">{title}</h1>
+        <p className="tool-start-lede">{lede}</p>
+        {intake}
+      </div>
+    </div>
+  );
+  const busy = (tool: Tool) => isProcessing && busyTool === tool;
+  const lockedBy = (tool: Tool) => (isProcessing && busyTool !== tool ? busyTool : null);
+  const failure = (tool: Tool) => (jobError?.tool === tool ? jobError.message : '');
 
   return (
-    <div className={`app${hasResults ? ' has-results' : ''}`}>
-      {/* ── Navbar ───────────────────────────────── */}
-      <nav className="navbar">
-        <div className="navbar-left">
-          <button className="navbar-brand" onClick={goHome} title="Back to home">
-            <span className="navbar-mark" aria-hidden />
-            <span className="navbar-title">jar-compare</span>
+    <div className="wb">
+      <TitleBar
+        center={(
+          <button className="wb-search" onClick={() => setPalette('')} aria-label="Search classes, files and commands">
+            <Search size={14} aria-hidden />
+            <span className="wb-search-text">Search classes, files and commands…</span>
+            <kbd>{MOD}K</kbd>
           </button>
+        )}
+        crumbs={crumbs} dirty={mode === 'markdown' && !!mdStatus?.dirty} onHome={() => switchMode('home')} actions={titleActions} />
+      <ActivityBar tool={mode} onSelect={switchMode} busy={busyTool ? { [busyTool]: isProcessing } : undefined} />
 
-          {(!hasResults || mode === 'markdown') && (
-            <div className="mode-tabs">
-              <button className={`mode-tab${mode === 'compare' ? ' active' : ''}`} onClick={() => switchMode('compare')}>Compare</button>
-              <button className={`mode-tab${mode === 'decompile' ? ' active' : ''}`} onClick={() => switchMode('decompile')}>Decompile</button>
-              <button className={`mode-tab${mode === 'profile' ? ' active' : ''}`} onClick={() => switchMode('profile')}>Profile</button>
-              <button className={`mode-tab${mode === 'markdown' ? ' active' : ''}`} onClick={() => switchMode('markdown')}>Markdown</button>
-            </div>
-          )}
-
-          {diffResult && jar1File && jar2File && (
-            <div className="navbar-jars">
-              <span className="jar-pill">{jar1File.name}</span>
-              <span className="jar-arrow">→</span>
-              <span className="jar-pill">{jar2File.name}</span>
-            </div>
-          )}
-          {decompiled && srcJar && (
-            <div className="navbar-jars">
-              <span className="jar-pill">{srcJar.name}</span>
-              <span className="jar-arrow">⇣ sources</span>
-            </div>
-          )}
-          {jfrResult && jfrFile && (
-            <div className="navbar-jars">
-              <span className="jar-pill">{jfrFile.name}</span>
-              <span className="jar-arrow">profile</span>
-            </div>
-          )}
+      <main className="wb-main">
+      {mode === 'home' && (
+        <div className="wb-scroll">
+          <Home
+            onFiles={routeFiles}
+            onTool={switchMode}
+            recent={recent}
+            onClearRecent={() => { clearRecent(); setRecent([]); }}
+            jvm={jvm}
+            shortcuts={shortcuts}
+          />
         </div>
+      )}
 
-        <div className="navbar-right">
-          {decompiled && (
-            <button className="btn btn-primary btn-sm" onClick={downloadZip}>⇣ Download .zip</button>
-          )}
-          {hasResults && mode !== 'markdown' && (
-            <button className="btn btn-ghost" onClick={resetAll}>
-              {mode === 'compare' ? 'New comparison' : 'New file'}
-            </button>
-          )}
-          {hasResults && mode !== 'markdown' && (
-            <button className="btn btn-icon" onClick={goHome} title="Back to the start page">Home</button>
-          )}
-          <button className="btn btn-icon navbar-theme" onClick={toggleTheme} title="Toggle theme" aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} theme`}>
-            {theme === 'dark' ? 'Light' : 'Dark'}
-          </button>
-        </div>
-      </nav>
+      {mode === 'compare' && !diffResult && toolStart(
+        'compare',
+        'Compare two builds',
+        'Drop the old and the new archive. Every entry is hashed and matched, changed classes are decompiled, and you read the difference as Java source.',
+        <Intake
+          command={<>diff <var>a/</var>original <var>b/</var>new</>}
+          slots={[
+            { marker: '−', prefix: 'a/', role: 'original build', tone: 'old', file: jar1File, setFile: setJar1File },
+            { marker: '+', prefix: 'b/', role: 'new build', tone: 'new', file: jar2File, setFile: setJar2File },
+          ]}
+          accept={['.jar', '.war', '.ear']}
+          action="Compare"
+          busy={busy('compare')}
+          lockedBy={lockedBy('compare')}
+          failure={failure('compare')}
+          progress={progressText}
+          onRun={() => handleCompare()}
+          onSwap={() => { setJar1File(jar2File); setJar2File(jar1File); }}
+        />,
+      )}
 
-      {/* ── Home: intake + datasheet ─────────────── */}
-      {!hasResults && (
-        <div className="home">
-          <main className="home-hero">
-            <div className="hero-copy">
-              <p className="hero-meta">
-                {mode === 'profile' ? '.jfr' : 'jar · war · ear'}
-                <span>runs in this tab</span>
-                <span>nothing is uploaded</span>
-              </p>
-              {mode === 'compare' && (
-                <>
-                  <h1 className="hero-title"><span>Diff two</span> <span>Java builds.</span></h1>
-                  <p className="hero-lede">Drop the old and the new archive. Every entry is hashed and matched, changed classes are decompiled, and you read the difference as Java source.</p>
-                </>
-              )}
-              {mode === 'decompile' && (
-                <>
-                  <h1 className="hero-title"><span>Read the source</span> <span>of any JAR.</span></h1>
-                  <p className="hero-lede">CFR turns the bytecode back into Java and every resource is extracted alongside it. Browse the package tree, then take it all as a <code>.zip</code>.</p>
-                </>
-              )}
-              {mode === 'profile' && (
-                <>
-                  <h1 className="hero-title"><span>See where the</span> <span>JVM spends its time.</span></h1>
-                  <p className="hero-lede">Open a Flight Recorder file. CPU samples become a hot-method table and a flame graph you can search.</p>
-                </>
-              )}
-            </div>
+      {mode === 'decompile' && !decompiled && toolStart(
+        'decompile',
+        'Decompile an archive',
+        <>CFR turns the bytecode back into Java and every resource is extracted alongside it. Browse the package tree, then download it all as <code>sources.zip</code>.</>,
+        <Intake
+          command={<>cfr <var>archive</var> → src/</>}
+          slots={[{ marker: '›', prefix: 'in/', role: 'archive to decompile', tone: 'neutral', file: srcJar, setFile: setSrcJar }]}
+          accept={['.jar', '.war', '.ear']}
+          action="Decompile"
+          busy={busy('decompile')}
+          lockedBy={lockedBy('decompile')}
+          failure={failure('decompile')}
+          progress={progressText}
+          onRun={() => handleDecompile()}
+        />,
+      )}
 
-            <div className="hero-tool">
-              {mode === 'compare' && (
-                <Intake
-                  command={<>diff <var>a/</var>original <var>b/</var>new</>}
-                  slots={[
-                    { marker: '−', prefix: 'a/', role: 'original build', tone: 'old', file: jar1File, setFile: setJar1File },
-                    { marker: '+', prefix: 'b/', role: 'new build', tone: 'new', file: jar2File, setFile: setJar2File },
-                  ]}
-                  accept={['.jar', '.war', '.ear']}
-                  action="Compare"
-                  busy={isProcessing}
-                  progress={progressText}
-                  onRun={handleCompare}
-                  onSwap={() => { setJar1File(jar2File); setJar2File(jar1File); }}
-                />
-              )}
-              {mode === 'decompile' && (
-                <Intake
-                  command={<>cfr <var>archive</var> → src/</>}
-                  slots={[{ marker: '›', prefix: 'in/', role: 'archive to decompile', tone: 'neutral', file: srcJar, setFile: setSrcJar }]}
-                  accept={['.jar', '.war', '.ear']}
-                  action="Decompile"
-                  busy={isProcessing}
-                  progress={progressText}
-                  onRun={handleDecompile}
-                />
-              )}
-              {mode === 'profile' && (
-                <Intake
-                  command={<>jfr <var>recording</var> → flame graph</>}
-                  slots={[{ marker: '›', prefix: 'in/', role: 'flight recording', tone: 'neutral', file: jfrFile, setFile: setJfrFile }]}
-                  accept={['.jfr']}
-                  action="Analyze"
-                  busy={isProcessing}
-                  progress={progressText}
-                  onRun={handleProfile}
-                />
-              )}
-              {mode === 'compare' && (
-                <p className="hero-tip">Drop both archives on the panel at once and they fill <var>a/</var> and <var>b/</var> in order.</p>
-              )}
-            </div>
-          </main>
-
-          <section className="sheet" aria-label="About JAR Compare">
-            {procedureOrder(mode).map((key, i) => {
-              const proc = PROCEDURES[key];
-              return (
-                <div className="sheet-row" key={key}>
-                  <div className="sheet-label"><span>§0{i + 1}</span>Procedure</div>
-                  <div className="sheet-body">
-                    <h2>{proc.title}</h2>
-                    <ol className="proc">
-                      {proc.steps.map((step) => <li key={step.key}><b>{step.key}.</b> {step.text}</li>)}
-                    </ol>
-                  </div>
-                </div>
-              );
-            })}
-
-            <div className="sheet-row">
-              <div className="sheet-label"><span>§04</span>Coverage</div>
-              <div className="sheet-body">
-                <h2>What it handles</h2>
-                <dl className="spec">
-                  <div><dt>Archives</dt><dd>JAR, WAR and EAR, compared entry by entry: added, removed, modified, identical.</dd></div>
-                  <div><dt>Nested JARs</dt><dd>Fat and Spring Boot JARs are opened recursively, so a changed library inside is a diff too.</dd></div>
-                  <div><dt>Source diffs</dt><dd>Changed <code>.class</code> files are decompiled before diffing; you never read raw bytecode.</dd></div>
-                  <div><dt>Decompiled trees</dt><dd>A whole archive back to browsable, downloadable Java.</dd></div>
-                  <div><dt>JFR recordings</dt><dd>Hot methods by self and total time, and a searchable flame graph.</dd></div>
-                  <div><dt>Markdown</dt><dd>An editor with outline, live preview and interactive Mermaid diagrams, for the notes that go with a release.</dd></div>
-                </dl>
-              </div>
-            </div>
-
-            <div className="sheet-row sheet-row--statement">
-              <div className="sheet-label"><span>§05</span>Privacy</div>
-              <div className="sheet-body">
-                <h2 className="statement">Your bytecode never leaves this tab.</h2>
-                <p>
-                  A real Java virtual machine, compiled to WebAssembly by CheerpJ, runs inside the page. Comparison
-                  and decompilation happen on your machine with the CFR decompiler, so proprietary code is never
-                  uploaded anywhere.
-                </p>
-              </div>
-            </div>
-
-            <div className="sheet-row">
-              <div className="sheet-label"><span>§06</span>Questions</div>
-              <div className="sheet-body">
-                <h2>Frequently asked questions</h2>
-                <div className="faq">
-                  <details>
-                    <summary>Is JAR Compare free?</summary>
-                    <p>Yes. There is no account, no sign-up and no limit.</p>
-                  </details>
-                  <details>
-                    <summary>Are my JAR files uploaded anywhere?</summary>
-                    <p>No. Everything runs in your browser through WebAssembly; the files never leave your device.</p>
-                  </details>
-                  <details>
-                    <summary>Can it compare Spring Boot or fat/uber JARs?</summary>
-                    <p>Yes. Nested JARs such as <code>BOOT-INF/lib</code> are opened and their contents compared as well.</p>
-                  </details>
-                  <details>
-                    <summary>How does it show source diffs from compiled classes?</summary>
-                    <p>Changed <code>.class</code> files are decompiled to Java with CFR, then shown as a side-by-side diff.</p>
-                  </details>
-                  <details>
-                    <summary>Can I download the decompiled source?</summary>
-                    <p>Yes. In Decompile mode, browse the package tree and download everything as a <code>.zip</code>.</p>
-                  </details>
-                </div>
-              </div>
-            </div>
-          </section>
-
-          <footer className="colophon">
-            <span>jar-compare</span>
-            <span>Compare and decompile Java archives in the browser. Free, nothing uploaded.</span>
-            <a href="https://github.com/Emindu/jar-compare" target="_blank" rel="noopener noreferrer">Source on GitHub</a>
-          </footer>
-        </div>
+      {mode === 'profile' && !jfrResult && toolStart(
+        'profile',
+        'Profile a flight recording',
+        <>Open a <code>.jfr</code> file. CPU samples become a hot-method table and a searchable flame graph. Record one with <code>-XX:StartFlightRecording=duration=60s,filename=app.jfr,settings=profile</code>.</>,
+        <Intake
+          command={<>jfr <var>recording</var> → flame graph</>}
+          slots={[{ marker: '›', prefix: 'in/', role: 'flight recording', tone: 'neutral', file: jfrFile, setFile: setJfrFile }]}
+          accept={['.jfr']}
+          action="Analyze"
+          busy={busy('profile')}
+          lockedBy={lockedBy('profile')}
+          failure={failure('profile')}
+          progress={progressText}
+          onRun={() => handleProfile()}
+        />,
       )}
 
       {/* ── Results: COMPARE ─────────────────────── */}
-      {diffResult && stats && (
-        <>
-          <div className="stats-bar">
-            <span className="stats-total">{stats.total} files changed</span>
-            {stats.modifiedClasses > 0 && <span className="stat stat-modified-class">{stats.modifiedClasses} modified classes</span>}
-            {stats.modified       > 0 && <span className="stat stat-modified">{stats.modified} modified</span>}
-            {stats.added          > 0 && <span className="stat stat-added">+{stats.added} added</span>}
-            {stats.removed        > 0 && <span className="stat stat-removed">−{stats.removed} removed</span>}
-            {stats.identical      > 0 && <span className="stat stat-identical">{stats.identical} identical source</span>}
-            {stats.nested         > 0 && <span className="stat stat-nested">{stats.nested} nested</span>}
-            {stats.nestedArchives > 0 && <span className="stat stat-archive">{stats.nestedArchives} nested archive{stats.nestedArchives === 1 ? '' : 's'}</span>}
-          </div>
-
-          <div className="workspace">
-            <aside className="file-panel">
-              <div className="file-panel-hd">Files changed</div>
-              <div className="file-list">
-                {renderSection(diffResult.modifiedClasses,        'modifiedClasses',        'Modified Classes')}
-                {renderSection(diffResult.modified,               'modified',               'Modified'        )}
-                {renderSection(diffResult.added,                  'added',                  'Added'           )}
-                {renderSection(diffResult.removed,                'removed',                'Removed'         )}
-                {renderSection(diffResult.identicalSourceClasses, 'identicalSourceClasses', 'Identical Source')}
-                {renderSection(diffResult.nestedChanges,          'nestedChanges',          'Nested JAR'      )}
-                {renderNestedSection(diffResult.modifiedNested)}
-              </div>
-              {diffResult.modifiedNested.length > 0 && (
-                <div className="panel-hints">
-                  <span>Double-click a nested archive to diff its contents</span>
-                </div>
-              )}
-            </aside>
-
-            <div className="diff-panel">
-              {selectedFile && selectedType ? (
-                <div className="diff-view">
-                  <div className="diff-panel-hd">
-                    <span className="diff-crumb">{breadcrumb(selectedFile)}</span>
-                    <span className={`diff-type-badge badge-${STATUS_META[selectedType].cls}`}>
-                      {STATUS_META[selectedType].label}
-                    </span>
-                  </div>
-                  {selectedType === 'identicalSourceClasses' && (
-                    <div className="alert-banner">
-                      <strong>Decompiled source is identical</strong> — binary differs due to compiler version, line numbers, or debug info.
-                    </div>
-                  )}
-                  <div className="diff-body">
-                    {selectedType === 'modifiedNested' ? (
-                      <div className="diff-empty">
-                        <span className="diff-empty-icon">📦</span>
-                        <p>Nested archive differs</p>
-                        <p className="diff-empty-sub">
-                          Compare its contents to diff every changed class &amp; resource inline.
-                        </p>
-                        <button
-                          className="btn btn-primary"
-                          disabled={expandingNested === selectedFile}
-                          onClick={() => compareNested(selectedFile)}
-                        >
-                          {expandingNested === selectedFile
-                            ? 'Comparing…'
-                            : expandedNested.has(selectedFile) ? '↻ Re-open changes' : '⧉ Compare contents'}
-                        </button>
-                        {expandedNested.has(selectedFile) && (
-                          <p className="diff-empty-sub">
-                            Its changes are listed above under Modified Classes / Added / Removed.
-                          </p>
-                        )}
-                        <p className="diff-empty-sub">Tip: double-click a nested archive in the list to compare it.</p>
-                      </div>
-                    ) : (
-                      <ReactDiffViewer
-                        oldValue={fileContent1}
-                        newValue={fileContent2}
-                        splitView={true}
-                        useDarkTheme={theme === 'dark'}
-                        leftTitle={jar1File?.name}
-                        rightTitle={jar2File?.name}
-                      />
-                    )}
-                  </div>
-                </div>
-              ) : (
-                <div className="diff-empty">
-                  <span className="diff-empty-icon">⬡</span>
-                  <p>Select a file to view the diff</p>
-                  <p className="diff-empty-sub">{stats.total} files · {jar1File?.name} → {jar2File?.name}</p>
-                </div>
-              )}
-            </div>
-          </div>
-        </>
+      {mode === 'compare' && diffResult && jar1File && jar2File && (
+        <CompareView
+          key={`${jar1File.name}|${jar2File.name}|${compareMs}`}
+          diff={diffResult}
+          nameA={jar1File.name}
+          nameB={jar2File.name}
+          theme={theme}
+          selected={selectedFile}
+          onSelect={setSelectedFile}
+          onNested={compareNested}
+          expanding={expandingNested}
+          expanded={expandedNested}
+          onSwap={() => { const a = jar1File, b = jar2File; setJar1File(b); setJar2File(a); setSelectedFile(null); handleCompare(b, a); }}
+          onStatus={setCompareStatus}
+          commandsRef={compareCmds}
+        />
       )}
 
       {/* ── Results: DECOMPILE ───────────────────── */}
-      {decompiled && (
-        <>
-          <div className="stats-bar">
-            <span className="stats-total">{decompiledPaths.length} files extracted</span>
-            {javaPaths.length     > 0 && <span className="stat stat-added">{javaPaths.length} sources (.java)</span>}
-            {resourcePaths.length > 0 && <span className="stat stat-nested">{resourcePaths.length} resources</span>}
-          </div>
-
-          <div className="workspace">
-            <aside className="file-panel">
-              <div className="file-search">
-                <input
-                  type="text"
-                  className="file-search-input"
-                  placeholder="Search class name or contents…"
-                  value={sourceQuery}
-                  onChange={e => setSourceQuery(e.target.value)}
-                  spellCheck={false}
-                  autoComplete="off"
-                />
-                {sourceQuery && (
-                  <button className="file-search-clear" onClick={() => setSourceQuery('')} title="Clear search">✕</button>
-                )}
-              </div>
+      {mode === 'decompile' && decompiled && (
+        <div className="dv">
+          <aside className="dv-side">
+            <header className="dv-side-hd">
+              <h2 className="wb-label">Explorer</h2>
+              <span className="dv-seg" role="group" aria-label="Explorer view">
+                <button className={explorerView === 'packages' ? 'is-on' : ''} onClick={() => setExplorerView('packages')} aria-pressed={explorerView === 'packages'}>packages</button>
+                <button className={explorerView === 'files' ? 'is-on' : ''} onClick={() => setExplorerView('files')} aria-pressed={explorerView === 'files'}>files</button>
+              </span>
+            </header>
+            <label className="cv-filter">
+              <Search size={13} aria-hidden />
+              <input
+                ref={explorerFilterRef}
+                value={sourceQuery}
+                onChange={e => setSourceQuery(e.target.value)}
+                onKeyDown={e => { if (e.key === 'Escape') { setSourceQuery(''); e.currentTarget.blur(); } }}
+                placeholder="Filter classes and contents"
+                spellCheck={false}
+                autoComplete="off"
+                aria-label="Filter classes and contents"
+              />
+              <kbd>/</kbd>
+            </label>
+            <div className="dv-tree">
               {searchResults ? (
-                <div className="file-list">
-                  {searchResults.total === 0 && (
-                    <div className="search-empty">No matches.</div>
-                  )}
-                  {searchResults.classes.length > 0 && (
-                    <>
-                      <div className="file-section-label search-summary">
-                        Class &amp; file names
-                        <span className="file-section-count">{searchResults.classes.length}</span>
-                      </div>
-                      {searchResults.classes.map(renderResultRow)}
-                    </>
-                  )}
-                  {searchResults.contents.length > 0 && (
-                    <>
-                      <div className="file-section-label search-summary">
-                        In file contents
-                        <span className="file-section-count">{searchResults.contents.length}</span>
-                      </div>
-                      {searchResults.contents.map(renderResultRow)}
-                    </>
-                  )}
-                </div>
-              ) : (
-                <div className="file-list file-tree">
-                  {decompiledTree && renderTree(decompiledTree, 0)}
-                </div>
+                <>
+                  {searchResults.total === 0 && <div className="cv-none">No matches.</div>}
+                  {searchResults.classes.length > 0 && <div className="dv-sub">Names <b>{searchResults.classes.length}</b></div>}
+                  {searchResults.classes.map(renderResultRow)}
+                  {searchResults.contents.length > 0 && <div className="dv-sub">In contents <b>{searchResults.contents.length}</b></div>}
+                  {searchResults.contents.map(renderResultRow)}
+                </>
+              ) : explorerView === 'packages' ? renderPackages() : (
+                <div className="file-tree">{decompiledTree && renderTree(decompiledTree, 0)}</div>
               )}
-              <div className="panel-hints">
-                <span><kbd>⌘</kbd>/<kbd>Ctrl</kbd>+<kbd>P</kbd> go to class</span>
-                <span><kbd>⌘</kbd>/<kbd>Ctrl</kbd>-click a class to jump</span>
-                <span><kbd>Alt</kbd>+<kbd>←</kbd>/<kbd>→</kbd> back / forward</span>
-                <span>Double-click a nested <kbd>.jar</kbd> to decompile it</span>
-              </div>
-            </aside>
+            </div>
+            <footer className="dv-side-ft">
+              <span>{javaPaths.length} classes</span>
+              <span>{resourcePaths.filter(p => !isArchivePath(p)).length} resources</span>
+              {resourcePaths.some(isArchivePath) && <span>{resourcePaths.filter(isArchivePath).length} jars</span>}
+            </footer>
+          </aside>
 
-            <div className="diff-panel">
-              {selectedSource && selectedDecompiledFile ? (
-                <div className="diff-view">
-                  <div className="diff-panel-hd">
-                    <div className="nav-controls">
-                      <button className="nav-btn" disabled={!canBack} onClick={navBack} title="Back (Alt+←)">◀</button>
-                      <button className="nav-btn" disabled={!canForward} onClick={navForward} title="Forward (Alt+→)">▶</button>
-                    </div>
-                    <span className="diff-crumb">{renderBreadcrumb(selectedSource)}</span>
-                    <div className="file-actions">
-                      {selectedSource.endsWith('.java') && (
-                        <div className="outline-anchor">
-                          <button
-                            className={`file-action-btn${outlineOpen ? ' active' : ''}`}
-                            onClick={() => setOutlineOpen(o => !o)}
-                            title="Outline / structure"
-                          >
-                            ☰ Outline
-                          </button>
-                          {outlineOpen && (
-                            <div className="outline-pop">
-                              <div className="outline-hd">Structure</div>
-                              <div className="outline-list">
-                                {outline.length === 0 && <div className="outline-empty">No members found</div>}
-                                {outline.map((o, i) => (
-                                  <button
-                                    key={`${o.name}-${o.line}-${i}`}
-                                    className={`outline-row kind-${o.kind}`}
-                                    onClick={() => { flashLine(o.line); setOutlineOpen(false); }}
-                                  >
-                                    <span className="outline-icon">{o.kind === 'method' ? 'ƒ' : o.kind === 'field' ? '▪' : '◆'}</span>
-                                    <span className="outline-name">{o.name}</span>
-                                    <span className="outline-line">{o.line}</span>
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                      <span className={`diff-type-badge badge-${selectedSource.endsWith('.java') ? 'added' : 'nested'}`}>
-                        {selectedSource.endsWith('.java') ? 'Java source' : 'Resource'}
-                      </span>
-                      {selectedDecompiledFile.encoding === 'utf8' && (
-                        <button
-                          className="file-action-btn"
-                          onClick={() => copySource(selectedDecompiledFile.content)}
-                          title="Copy to clipboard"
-                        >
-                          {copied ? '✓ Copied' : '⧉ Copy'}
+          <section className="dv-main">
+            {(() => {
+              const tabs = selectedSource && !srcTabs.includes(selectedSource) ? [...srcTabs, selectedSource] : srcTabs;
+              if (!tabs.length) return null;
+              const close = (t: string) => {
+                const i = tabs.indexOf(t);
+                const rest = tabs.filter(x => x !== t);
+                setSrcTabs(rest);
+                if (t === selectedSource) openFile(rest[Math.min(i, rest.length - 1)] ?? null);
+              };
+              return (
+                <div className="cv-tabs" role="tablist">
+                  {tabs.map(t => {
+                    const { letter, tone } = letterFor(t, sourceKinds.get(t));
+                    return (
+                      <div key={t} className={`cv-tab${t === selectedSource ? ' is-active' : ''}`} role="tab" aria-selected={t === selectedSource}>
+                        <button className="cv-tab-open" onClick={() => { if (!srcTabs.includes(t)) setSrcTabs([...srcTabs, t]); openFile(t); }} title={t}>
+                          <span className={`dv-letter ${tone}`}>{letter}</span> {t.split('/').pop()}
                         </button>
-                      )}
-                      <button
-                        className="file-action-btn"
-                        onClick={() => downloadSingle(selectedSource, selectedDecompiledFile)}
-                        title="Download this file"
-                      >
-                        ⇣ Download
-                      </button>
-                      <button
-                        className="file-action-btn"
-                        onClick={() => openInNewTab(selectedSource, selectedDecompiledFile)}
-                        title="Open in new tab"
-                      >
-                        ↗ Open
-                      </button>
-                    </div>
-                  </div>
-                  <div className="diff-body" ref={sourceScrollRef}>
-                    {selectedDecompiledFile.encoding === 'base64' ? (
-                      isArchivePath(selectedSource) ? (
-                        <div className="diff-empty">
-                          <span className="diff-empty-icon">📦</span>
-                          <p>Nested archive</p>
-                          <p className="diff-empty-sub">Decompile it to browse its classes &amp; resources inline.</p>
-                          <button
-                            className="btn btn-primary"
-                            disabled={expandingArchive === selectedSource}
-                            onClick={() => decompileNested(selectedSource)}
-                          >
-                            {expandingArchive === selectedSource ? 'Decompiling…' : '⧉ Decompile this archive'}
-                          </button>
-                          <p className="diff-empty-sub">Tip: double-click a nested <code>.jar</code>/<code>.war</code>/<code>.ear</code> in the tree to decompile it.</p>
-                        </div>
-                      ) : (
-                        <div className="diff-empty">
-                          <span className="diff-empty-icon">▢</span>
-                          <p>Binary file — not previewable</p>
-                          <p className="diff-empty-sub">Included in the downloaded archive</p>
-                        </div>
-                      )
-                    ) : (
-                      <div
-                        className={`source-nav${modDown && selectedSource.endsWith('.java') ? ' mod-down' : ''}`}
-                        onClick={onSourceClick}
-                        onMouseMove={onSourceMouseMove}
-                        onMouseLeave={clearNavHover}
-                      >
-                        <SyntaxHighlighter
-                          language={langForPath(selectedSource)}
-                          style={theme === 'dark' ? oneDark : oneLight}
-                          showLineNumbers
-                          wrapLongLines={false}
-                          wrapLines
-                          lineProps={(n: number) => ({ id: LINE_ID(n) })}
-                          customStyle={{
-                            margin: 0,
-                            background: 'transparent',
-                            padding: '1rem 1.25rem',
-                            fontSize: '0.82rem',
-                          }}
-                          codeTagProps={{ style: { fontFamily: 'var(--font-mono)' } }}
-                          lineNumberStyle={{ color: 'var(--text-muted)', opacity: 0.5, minWidth: '2.5em' }}
-                        >
-                          {selectedDecompiledFile.content}
-                        </SyntaxHighlighter>
+                        <button className="cv-tab-x" onClick={() => close(t)} aria-label={`Close ${t.split('/').pop()}`}><X size={12} /></button>
                       </div>
-                    )}
-                  </div>
+                    );
+                  })}
                 </div>
-              ) : (
-                <div className="diff-empty">
-                  <span className="diff-empty-icon">⬡</span>
-                  <p>Select a file to view its source</p>
-                  <p className="diff-empty-sub">{decompiledPaths.length} files · use “Download .zip” for everything</p>
-                </div>
-              )}
-            </div>
-          </div>
+              );
+            })()}
 
-          {metaItems.length > 0 && (
-            <div className="meta-bar" aria-label="JAR metadata">
-              {metaItems.map(it => (
-                <span className="meta-item" key={it.label}>
-                  <span className="meta-label">{it.label}</span>
-                  <span className="meta-value">{it.value}</span>
-                </span>
-              ))}
-            </div>
-          )}
-        </>
+            {selectedSource && selectedDecompiledFile ? (
+              <>
+                <div className="cv-path dv-path">
+                  <span className="dv-nav">
+                    <button className="cv-icon" disabled={!canBack} onClick={navBack} title="Back (Alt+←)" aria-label="Back"><ArrowLeft size={14} /></button>
+                    <button className="cv-icon" disabled={!canForward} onClick={navForward} title="Forward (Alt+→)" aria-label="Forward"><ArrowRight size={14} /></button>
+                  </span>
+                  <span className="dv-crumbs">{renderBreadcrumb(selectedSource)}</span>
+                  <span className="cv-path-spacer" />
+                  {selectedDecompiledFile.encoding === 'utf8' && (
+                    <button className="wb-btn cv-copy" onClick={() => copySource(selectedDecompiledFile.content)}>
+                      <ClipboardCopy size={13} /> {copied ? 'Copied' : 'Copy'}
+                    </button>
+                  )}
+                  <button className="wb-btn cv-copy" onClick={() => downloadSingle(selectedSource, selectedDecompiledFile)}><FileDown size={13} /> Download</button>
+                  <button
+                    className="wb-btn cv-copy"
+                    onClick={() => { setJar1File(srcJar); setJar2File(null); resetCompareResults(); setMode('compare'); }}
+                    title="Use this archive as a/ in Compare"
+                  >
+                    <GitCompare size={13} /> Compare with…
+                  </button>
+                </div>
+
+                <div className="dv-code" ref={sourceScrollRef}>
+                  {selectedDecompiledFile.encoding === 'base64' ? (
+                    isArchivePath(selectedSource) ? (
+                      <div className="cv-nested-panel">
+                        <h3>{selectedSource.split('/').pop()}</h3>
+                        <p>A library packaged inside this archive. Decompile it to browse its classes and resources in the explorer.</p>
+                        <button className="wb-btn wb-btn-primary" disabled={expandingArchive === selectedSource} onClick={() => decompileNested(selectedSource)}>
+                          {expandingArchive === selectedSource ? 'Decompiling…' : 'Decompile this archive'}
+                        </button>
+                        <p className="cv-hint">Tip: double-click a nested archive in the explorer.</p>
+                      </div>
+                    ) : (
+                      <div className="cv-nested-panel">
+                        <h3>{selectedSource.split('/').pop()}</h3>
+                        <p>Binary file. It can't be previewed here, but it is included in <code>sources.zip</code> and Download file.</p>
+                      </div>
+                    )
+                  ) : (
+                    <div
+                      className={`source-nav${modDown && selectedSource.endsWith('.java') ? ' mod-down' : ''}`}
+                      onClick={onSourceClick}
+                      onMouseMove={onSourceMouseMove}
+                      onMouseLeave={clearNavHover}
+                    >
+                      <SyntaxHighlighter
+                        language={langForPath(selectedSource)}
+                        style={theme === 'dark' ? oneDark : oneLight}
+                        showLineNumbers
+                        wrapLongLines={false}
+                        wrapLines
+                        lineProps={(n: number) => ({ id: LINE_ID(n) })}
+                        customStyle={{ margin: 0, background: 'transparent', padding: '12px 0', fontSize: '13px', lineHeight: '21px' }}
+                        codeTagProps={{ style: { fontFamily: 'var(--font-mono)' } }}
+                        lineNumberStyle={{ color: 'var(--text-faint)', minWidth: '3.5em', paddingRight: '1.4em', textAlign: 'right', fontStyle: 'normal' }}
+                      >
+                        {selectedDecompiledFile.content}
+                      </SyntaxHighlighter>
+                    </div>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="cv-empty">
+                <p className="cv-empty-title">{decompiledPaths.length} files extracted</p>
+                <p>Pick a class in the explorer, or press <kbd>{MOD}P</kbd> to go to one by name. <kbd>{MOD}</kbd>-click a type in the source to jump to it.</p>
+              </div>
+            )}
+          </section>
+
+          <aside className="dv-inspector" aria-label="Inspector">
+            {outline.length > 0 && (
+              <section className="dv-card">
+                <h2 className="wb-label">Outline</h2>
+                <ul className="dv-outline">
+                  {outline.filter(o => o.kind !== 'class').map((o, i) => (
+                    <li key={`${o.name}-${o.line}-${i}`}>
+                      <button onClick={() => flashLine(o.line)} title={`Line ${o.line}`}>
+                        <span className={`dv-ok ok-${o.kind}`}>{o.kind === 'method' ? 'm' : 'f'}</span>
+                        <span className="dv-on">{o.name}<span className="dv-od">{o.kind === 'method' ? o.detail : ` ${o.detail}`}</span></span>
+                        <span className="dv-ol">{o.line}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
+            {classInfo && (
+              <section className="dv-card">
+                <h2 className="wb-label">{classInfo.kind === 'annotation' ? 'Annotation' : classInfo.kind[0].toUpperCase() + classInfo.kind.slice(1)}</h2>
+                <dl className="dv-kv">
+                  <div><dt>Declares</dt><dd title={classInfo.header}>{classInfo.header.replace(/\s+\S+$/, '') || classInfo.kind}</dd></div>
+                  {decompiledMeta?.javaVersion && <div><dt>Class file</dt><dd>{decompiledMeta.javaVersion}</dd></div>}
+                  <div><dt>Source</dt><dd>{classInfo.lines} lines · {fmtSize(classInfo.size)}</dd></div>
+                  <div className="dv-kv-col">
+                    <dt>Referenced by</dt>
+                    <dd>
+                      {referencedBy.length ? referencedBy.map(p => (
+                        <button key={p} className="dv-ref" onClick={() => openFile(p)} title={p}>{p.split('/').pop()!.replace(/\.java$/, '')}</button>
+                      )) : <span className="dv-none">no other class in this archive</span>}
+                    </dd>
+                  </div>
+                </dl>
+              </section>
+            )}
+            {manifest.length > 0 && (
+              <section className="dv-card">
+                <h2 className="wb-label">Manifest</h2>
+                <dl className="dv-kv dv-kv-stack">
+                  {manifest.slice(0, 10).map(e => (
+                    <div key={e.key}><dt>{e.key}</dt><dd>{e.value}</dd></div>
+                  ))}
+                </dl>
+              </section>
+            )}
+            {metaItems.length > 0 && (
+              <section className="dv-card">
+                <h2 className="wb-label">Archive</h2>
+                <dl className="dv-kv">
+                  {metaItems.map(it => <div key={it.label}><dt>{it.label}</dt><dd>{it.value}</dd></div>)}
+                </dl>
+              </section>
+            )}
+          </aside>
+        </div>
       )}
 
       {/* ── Results: PROFILE (JFR) ───────────────── */}
-      {jfrResult && <Profiler result={jfrResult} />}
+      {mode === 'profile' && jfrResult && (
+        <Profiler
+          key={jfrFile?.name ?? 'jfr'}
+          result={jfrResult}
+          theme={theme}
+          onStatus={setProfileStatus}
+          onOpenSource={openSourceFromProfile}
+          exportRef={flameExport}
+        />
+      )}
 
       {/* ── Results: MARKDOWN ────────────────────── */}
-      {mode === 'markdown' && <MarkdownWorkspace theme={theme} />}
+      {mode === 'markdown' && (
+        <MarkdownWorkspace
+          key={mdIncoming?.id ?? 'draft'}
+          theme={theme}
+          incoming={mdIncoming}
+          onOpen={(name) => remember('markdown', name)}
+          onStatus={setMdStatus}
+          actionsRef={mdActions}
+        />
+      )}
+      </main>
 
-      {/* ── Quick Open (Ctrl/Cmd+P) ── */}
-      {quickOpen && (
-        <div className="qo-overlay" onClick={() => setQuickOpen(false)}>
-          <div className="qo-modal" onClick={e => e.stopPropagation()}>
-            <input
-              autoFocus
-              className="qo-input"
-              placeholder="Go to class…"
-              value={quickQuery}
-              onChange={e => { setQuickQuery(e.target.value); setQuickIndex(0); }}
-              onKeyDown={onQuickKey}
-              spellCheck={false}
-            />
-            <div className="qo-list">
-              {quickResults.length === 0 && <div className="qo-empty">No matching files</div>}
-              {quickResults.map((r, i) => (
-                <button
-                  key={r.path}
-                  className={`qo-row${i === Math.min(quickIndex, quickResults.length - 1) ? ' active' : ''}`}
-                  onMouseEnter={() => setQuickIndex(i)}
-                  onClick={() => { openFile(r.path); setQuickOpen(false); }}
-                >
-                  <span className={`file-badge badge-${r.path.endsWith('.java') ? 'added' : 'nested'}`}>
-                    {r.path.endsWith('.java') ? 'J' : 'R'}
-                  </span>
-                  <span className="qo-name">{r.path.split('/').pop()}</span>
-                  <span className="qo-path">{r.path}</span>
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
+      <StatusBar
+        jvm={jvm}
+        left={<>
+          {mode === 'compare' && diffResult ? (
+            <span>{allChanged(diffResult)} changed{compareMs !== null ? ` · compared in ${(compareMs / 1000).toFixed(1)} s` : ''}</span>
+          ) : mode === 'profile' && jfrResult ? (
+            <><span>parsed in the browser · no JVM needed</span><span>jdk.ExecutionSample</span></>
+          ) : mode === 'markdown' && mdStatus ? (
+            <>
+              <span>{mdStatus.saved === 'off' ? 'storage blocked · save to keep your work' : mdStatus.saved === 'saving' ? 'saving draft…' : 'draft kept in this browser'}</span>
+              {mdStatus.stats && <span>{mdStatus.stats.sections} sections · {mdStatus.stats.diagrams} {mdStatus.stats.diagrams === 1 ? 'diagram' : 'diagrams'}{mdStatus.stats.editor ? ` · ${mdStatus.stats.editor.errors} ${mdStatus.stats.editor.errors === 1 ? 'error' : 'errors'}` : ''}</span>}
+            </>
+          ) : mode === 'decompile' && decompiled ? (
+            <span>decompiled {javaPaths.length} classes{decompileMs !== null ? ` in ${(decompileMs / 1000).toFixed(1)} s` : ''}</span>
+          ) : (
+            <span>CheerpJ 4.3 · WebAssembly</span>
+          )}
+          {mode !== 'markdown' && <span>local only · 0 B uploaded</span>}
+          {isProcessing && progressText && <span className="wb-status-progress">{progressText}</span>}
+        </>}
+        right={<>
+          {mode === 'compare' && diffResult && compareStatus && (
+            <>
+              {compareStatus.change && <span>{compareStatus.change}</span>}
+              {compareStatus.lang && <span>{compareStatus.view}</span>}
+              {compareStatus.lang && <span>{compareStatus.lang}{compareStatus.lang === 'Java' ? ' · CFR' : ''}</span>}
+            </>
+          )}
+          {mode === 'decompile' && classInfo && <span>{classInfo.lines} lines · UTF-8 · Java · CFR</span>}
+          {mode === 'markdown' && mdStatus?.stats && (
+            <>
+              {mdStatus.stats.editor && <span>Ln {mdStatus.stats.editor.line}, Col {mdStatus.stats.editor.col}{mdStatus.stats.editor.sel ? ` (${mdStatus.stats.editor.sel} selected)` : ''}</span>}
+              {mdStatus.stats.editor && <span>{mdStatus.stats.editor.lines} lines</span>}
+              <span>{mdStatus.stats.words.toLocaleString()} words</span>
+              <span>Markdown · Mermaid 11</span>
+            </>
+          )}
+          {mode === 'profile' && jfrResult && profileStatus && (
+            <><span>zoom: {profileStatus.zoom}</span><span>{profileStatus.metric} time</span></>
+          )}
+          <span>{theme}</span>
+        </>}
+      />
+
+      <input
+        ref={openPicker}
+        type="file"
+        multiple
+        accept=".jar,.war,.ear,.jfr,.md,.markdown"
+        hidden
+        onChange={e => {
+          const err = routeFiles([...(e.target.files ?? [])]);
+          if (err) { setMode('home'); showToast(err); }
+          e.target.value = '';
+        }}
+      />
+
+      {palette !== null && (
+        <CommandPalette
+          classes={paletteClasses}
+          symbols={paletteSymbols}
+          commands={paletteCommands}
+          initialQuery={palette}
+          onClose={() => setPalette(null)}
+        />
       )}
 
       {toast && <div className="nav-toast">{toast}</div>}

@@ -30,6 +30,14 @@ export interface HotMethod {
   total: number;          // samples where this method appears anywhere
 }
 
+/** Samples taken on one thread, aggregated the same way as the whole recording. */
+export interface ThreadProfile {
+  name: string;
+  samples: number;
+  hot: HotMethod[];
+  flame: FlameNode;
+}
+
 export interface JfrResult {
   version: string;
   chunks: number;
@@ -40,7 +48,13 @@ export interface JfrResult {
   eventCounts: { name: string; count: number }[];
   hot: HotMethod[];
   flame: FlameNode;
+  /** Busiest threads first (at most MAX_THREAD_PROFILES). */
+  byThread: ThreadProfile[];
+  /** method → the source line it was most often executing when sampled on top of the stack. */
+  hotLine: Record<string, number>;
 }
+
+const MAX_THREAD_PROFILES = 64;
 
 // ── Low-level cursor over the byte buffer ──────────────────────────────────
 class Reader {
@@ -294,22 +308,15 @@ function resolveStack(
 // ── Aggregation into flame tree + hot methods ──────────────────────────────
 interface MutNode { name: string; value: number; self: number; children: Map<string, MutNode>; }
 
-class Aggregator {
+/** A flame tree plus self/total counts per method, for one set of samples. */
+class Tree {
   root: MutNode = { name: 'all', value: 0, self: 0, children: new Map() };
   hotSelf = new Map<string, number>();
   hotTotal = new Map<string, number>();
-  eventCounts = new Map<string, number>();
-  threads = new Set<string>();
   total = 0;
 
-  countEvent(name: string): void {
-    this.eventCounts.set(name, (this.eventCounts.get(name) || 0) + 1);
-  }
-
-  addSample(frames: JfrFrame[], thread: string | null): void {
-    if (!frames.length) return;
+  add(frames: JfrFrame[]): void {
     this.total++;
-    if (thread) this.threads.add(thread);
     let node = this.root;
     node.value++;
     const seen = new Set<string>();
@@ -344,6 +351,54 @@ class Aggregator {
       out.push({ name, self: this.hotSelf.get(name) || 0, total: this.hotTotal.get(name) || 0 });
     }
     out.sort((a, b) => b.self - a.self || b.total - a.total);
+    return out;
+  }
+}
+
+class Aggregator {
+  all = new Tree();
+  byThread = new Map<string, Tree>();
+  lines = new Map<string, Map<number, number>>(); // leaf method → line → samples
+  eventCounts = new Map<string, number>();
+  threads = new Set<string>();
+
+  get total(): number { return this.all.total; }
+
+  countEvent(name: string): void {
+    this.eventCounts.set(name, (this.eventCounts.get(name) || 0) + 1);
+  }
+
+  addSample(frames: JfrFrame[], thread: string | null): void {
+    if (!frames.length) return;
+    this.all.add(frames);
+    if (thread) {
+      this.threads.add(thread);
+      let t = this.byThread.get(thread);
+      if (!t) { t = new Tree(); this.byThread.set(thread, t); }
+      t.add(frames);
+    }
+    const { method, line } = frames[0];
+    if (line > 0) {
+      let m = this.lines.get(method);
+      if (!m) { m = new Map(); this.lines.set(method, m); }
+      m.set(line, (m.get(line) || 0) + 1);
+    }
+  }
+
+  threadProfiles(): ThreadProfile[] {
+    return [...this.byThread.entries()]
+      .sort((a, b) => b[1].total - a[1].total)
+      .slice(0, MAX_THREAD_PROFILES)
+      .map(([name, t]) => ({ name, samples: t.total, hot: t.hotMethods(), flame: t.flame() }));
+  }
+
+  hotLine(): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const [method, m] of this.lines) {
+      let best = 0, bestN = -1;
+      for (const [line, n] of m) if (n > bestN) { best = line; bestN = n; }
+      out[method] = best;
+    }
     return out;
   }
 }
@@ -434,7 +489,9 @@ export function parseJfr(buf: ArrayBuffer): JfrResult {
     durationNanos,
     threads: [...agg.threads].sort(),
     eventCounts,
-    hot: agg.hotMethods(),
-    flame: agg.flame(),
+    hot: agg.all.hotMethods(),
+    flame: agg.all.flame(),
+    byThread: agg.threadProfiles(),
+    hotLine: agg.hotLine(),
   };
 }
