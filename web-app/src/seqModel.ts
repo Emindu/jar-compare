@@ -117,3 +117,39 @@ export function freshParticipant(m: SeqModel): string {
   const used = new Set(m.participants.map((p) => p.id));
   for (let i = 1; ; i++) if (!used.has(`P${i}`)) return `P${i}`;
 }
+
+/** A loop / alt / opt / par / critical / break block and the lines that make it up. */
+export interface Block { keyword: string; open: number; end: number; sections: number[] }
+
+const LABELLED = /^(loop|alt|opt|par|critical|break)$/;
+
+/** Labelled blocks, ordered by their `end` line (the order mermaid draws them in). */
+export function blocksOf(m: SeqModel): Block[] {
+  const out: Block[] = [];
+  const stack: Block[] = [];
+  for (const r of m.rows) {
+    if (r.kind !== 'other') continue;
+    const kw = /^(\w+)/.exec(r.text)?.[1] ?? '';
+    if (OPEN.test(r.text)) stack.push({ keyword: kw, open: r.line, end: -1, sections: [] });
+    else if (/^(else|and|option)\b/.test(r.text) && stack.length) stack[stack.length - 1].sections.push(r.line);
+    else if (CLOSE.test(r.text)) {
+      const b = stack.pop();
+      if (b) { b.end = r.line; if (LABELLED.test(b.keyword)) out.push(b); }
+    }
+  }
+  return out;
+}
+
+export const isNote = (text: string) => /^note\b/i.test(text);
+
+/** "Note over A,B: text" → { head: "Note over A,B", text: "text" }. */
+export function splitNote(text: string): { head: string; body: string } {
+  const i = text.indexOf(':');
+  return i < 0 ? { head: text, body: '' } : { head: text.slice(0, i).trim(), body: text.slice(i + 1).trim() };
+}
+
+/** "alt batch is empty" → { keyword: "alt", cond: "batch is empty" }. */
+export function splitBlock(text: string): { keyword: string; cond: string } {
+  const m = /^(\w+)\s*(.*)$/.exec(text);
+  return { keyword: m?.[1] ?? text, cond: m?.[2] ?? '' };
+}
