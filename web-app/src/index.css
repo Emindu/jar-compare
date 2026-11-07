@@ -2681,7 +2681,8 @@ i.cat-jdk { background: color-mix(in srgb, var(--text-faint) 55%, var(--bg)); }
 .dge-sub { cursor: grab; }
 .dge-sub.is-sel > rect { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 5 3; }
 .dge-edge { cursor: pointer; }
-.dge-edge-hit { fill: none; stroke: transparent; stroke-width: 14; }
+.dge-edge-hit { fill: none; stroke: transparent; stroke-width: 14; cursor: pointer; }
+.dge-selpath { fill: none; stroke: var(--accent); stroke-width: 2; stroke-dasharray: 5 3; pointer-events: none; }
 .dge-edge:hover > path:nth-child(2) { stroke: var(--accent); }
 .dge-handle { fill: var(--bg); stroke: var(--accent); stroke-width: 2; cursor: crosshair; }
 .dge-handle:hover { fill: var(--accent); }
