@@ -487,11 +487,11 @@ const vars = {
 const DIFF_STYLES = {
   variables: { dark: vars, light: vars },
   diffContainer: { minWidth: 'auto' },
-  line: { fontFamily: 'var(--font-mono)', fontSize: '13px', lineHeight: '20px' },
-  contentText: { fontFamily: 'var(--font-mono)', fontSize: '13px', lineHeight: '20px' },
-  lineNumber: { fontFamily: 'var(--font-mono)', fontSize: '12px' },
+  line: { fontFamily: 'var(--font-mono)', fontSize: '0.8125rem', lineHeight: '1.25rem' },
+  contentText: { fontFamily: 'var(--font-mono)', fontSize: '0.8125rem', lineHeight: '1.25rem' },
+  lineNumber: { fontFamily: 'var(--font-mono)', fontSize: '0.75rem' },
   gutter: { minWidth: '44px', padding: '0 10px' },
   marker: { width: '20px', paddingLeft: '4px' },
-  titleBlock: { fontFamily: 'var(--font-mono)', fontSize: '12px', padding: '6px 12px' },
-  codeFold: { fontFamily: 'var(--font-mono)', fontSize: '12px' },
+  titleBlock: { fontFamily: 'var(--font-mono)', fontSize: '0.75rem', padding: '6px 12px' },
+  codeFold: { fontFamily: 'var(--font-mono)', fontSize: '0.75rem' },
 };

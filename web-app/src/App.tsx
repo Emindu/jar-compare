@@ -24,7 +24,7 @@ import CommandPalette, { type PaletteItem } from './CommandPalette';
 import { kindOf, letterFor, packageOf, parseOutline, parseManifest, splitArchive, type SourceKind } from './decompileModel';
 import { ArrowLeft, ArrowRight, GitCompare, FileDown, ClipboardCopy } from 'lucide-react';
 import Home from './Home';
-import { TitleBar, ActivityBar, StatusBar, ThemeButton } from './Workbench';
+import { TitleBar, ActivityBar, StatusBar, FontControl, ThemeButton } from './Workbench';
 import { IS_MAC, MOD, TOOLS, type Tool, type JvmState } from './shell';
 import { loadRecent, addRecent, clearRecent, type RecentItem } from './recent';
 import { Download, RotateCcw, ExternalLink, Search, X } from 'lucide-react';
@@ -208,6 +208,20 @@ export default function App() {
     } catch { /* storage unavailable */ }
     return window.matchMedia?.('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
   });
+
+  // page-wide font size, remembered alongside the theme ("fontScale" entry)
+  const [fontScale, setFontScaleRaw] = useState(() => {
+    try {
+      const v = parseFloat(localStorage.getItem('fontScale') ?? '');
+      if (Number.isFinite(v) && v >= 0.8 && v <= 1.4) return v;
+    } catch { /* storage unavailable */ }
+    return 1;
+  });
+  useEffect(() => {
+    document.documentElement.style.setProperty('--font-scale', String(fontScale));
+    try { localStorage.setItem('fontScale', String(fontScale)); } catch { /* storage unavailable */ }
+  }, [fontScale]);
+  const nudgeFontScale = (d: number) => setFontScaleRaw((s) => Math.min(1.4, Math.max(0.8, Math.round((s + d) * 20) / 20)));
 
   // compare state
   const [jar1File, setJar1File] = useState<File | null>(null);
@@ -1402,6 +1416,9 @@ export default function App() {
     for (const t of TOOLS) if (t.id !== mode) add(`Switch to ${t.name}`, 'tools', () => switchMode(t.id), t.key);
     if (mode !== 'home') add('Go home', 'tools', () => switchMode('home'));
     add('Open file…', 'file', () => openPicker.current?.click(), `${MOD}O`);
+    add('Increase page text size', 'view', () => nudgeFontScale(0.05));
+    add('Decrease page text size', 'view', () => nudgeFontScale(-0.05));
+    add('Reset page text size', 'view', () => setFontScaleRaw(1));
     add('Toggle light / dark theme', 'view', toggleTheme, `${SHIFT_MOD}L`);
     return out;
   };
@@ -1443,6 +1460,7 @@ export default function App() {
           </button>
         </>
       )}
+      <FontControl scale={fontScale} onSet={setFontScaleRaw} />
       <ThemeButton theme={theme} onToggle={toggleTheme} />
     </>
   );
@@ -1690,7 +1708,7 @@ export default function App() {
                         wrapLongLines={false}
                         wrapLines
                         lineProps={(n: number) => ({ id: LINE_ID(n) })}
-                        customStyle={{ margin: 0, background: 'transparent', padding: '12px 0', fontSize: '13px', lineHeight: '21px' }}
+                        customStyle={{ margin: 0, background: 'transparent', padding: '12px 0', fontSize: '0.8125rem', lineHeight: '1.3125rem' }}
                         codeTagProps={{ style: { fontFamily: 'var(--font-mono)' } }}
                         lineNumberStyle={{ color: 'var(--text-faint)', minWidth: '3.5em', paddingRight: '1.4em', textAlign: 'right', fontStyle: 'normal' }}
                       >
