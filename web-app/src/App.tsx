@@ -1883,7 +1883,7 @@ export default function App() {
         ref={openPicker}
         type="file"
         multiple
-        accept=".jar,.war,.ear,.jfr,.md,.markdown"
+        accept=".jar,.war,.ear,.jfr,.md,.markdown,.mmd,.mermaid"
         hidden
         onChange={e => {
           const err = routeFiles([...(e.target.files ?? [])]);

@@ -77,6 +77,7 @@ export default function Home({
               <span>1 × .jar/.war/.ear <i>→</i> decompile</span>
               <span>.jfr <i>→</i> profile</span>
               <span>.md <i>→</i> markdown</span>
+              <span>.mmd <i>→</i> diagram</span>
             </span>
             {error && <span className="home-drop-error" role="alert">{error}</span>}
           </button>
@@ -85,7 +86,7 @@ export default function Home({
             id="home-file-input"
             type="file"
             multiple
-            accept=".jar,.war,.ear,.jfr,.md,.markdown"
+            accept=".jar,.war,.ear,.jfr,.md,.markdown,.mmd,.mermaid"
             hidden
             onChange={(e) => { take([...(e.target.files ?? [])]); e.target.value = ''; }}
           />
