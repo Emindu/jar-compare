@@ -2,7 +2,7 @@
 // browser. Used by the Home launcher. Storage can be unavailable; every access
 // is wrapped so the app works without it.
 
-export type RecentKind = 'compare' | 'decompile' | 'profile' | 'markdown';
+export type RecentKind = 'compare' | 'decompile' | 'profile' | 'markdown' | 'diagram';
 
 export interface RecentItem {
   kind: RecentKind;

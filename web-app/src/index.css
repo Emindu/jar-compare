@@ -2650,6 +2650,26 @@ i.cat-jdk { background: color-mix(in srgb, var(--text-faint) 55%, var(--bg)); }
 .wb-crumb:not(.is-last) { flex-shrink: 0; }
 .wb .md-modal:focus-visible { outline: none; }
 
+/* ── Mermaid-only editor (Diagram tool) ── */
+.mm { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.mm-bar { display: flex; align-items: center; gap: 10px; padding: 6px 16px; border-bottom: 1px solid var(--line); background: var(--chrome); }
+.mm-name { font-family: var(--font-mono); font-size: 0.7813rem; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 34%; }
+.mm-actions { display: inline-flex; gap: 6px; }
+.mm-seg { display: inline-flex; margin-left: auto; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
+.mm-seg button { padding: 3px 10px; border: none; background: transparent; color: var(--text-muted); font-size: 0.72rem; cursor: pointer; }
+.mm-seg button.is-on { background: var(--raised); color: var(--text); }
+.mm-body { display: flex; flex: 1; min-height: 0; }
+.mm-code { width: 46%; min-width: 320px; border-right: 1px solid var(--line); overflow: hidden; background: var(--bg); position: relative; }
+.mm-ed { height: 100%; overflow: hidden; }
+.mm-view { flex: 1; min-width: 0; overflow: auto; padding: 20px; display: flex; justify-content: center; align-items: flex-start; }
+.mm-empty { color: var(--text-muted); font-size: 0.85rem; margin: auto; }
+.mm-body.is-code .mm-view, .mm-body.is-code .mm-code { border-right: none; }
+.mm-body.is-code .mm-view { display: none; }
+.mm-body.is-code .mm-code { width: 100%; min-width: 0; }
+.mm-body.is-preview .mm-code { display: none; }
+.mm-body.is-preview .mm-view { display: flex; overflow: auto; }
+.glyph-diagram { color: var(--accent); }
+
 /* ── Diagram editor ── */
 .dge-overlay { z-index: 210; }
 .dge { overflow: hidden; }

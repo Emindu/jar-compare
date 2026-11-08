@@ -17,6 +17,8 @@ import JSZip from 'jszip';
 import { parseJfr, type JfrResult } from './jfr';
 import Profiler, { type ProfileStatus } from './Profiler';
 import MarkdownWorkspace, { type MdActions, type MdStatus } from './MarkdownWorkspace';
+import { lazy, Suspense } from 'react';
+const MermaidView = lazy(() => import('./MermaidView'));
 import Intake from './Intake';
 import CompareView, { type CompareCommands, type CompareStatus } from './CompareView';
 import { allEntries, CHANGE_META, CHANGE_OF, type DiffResult } from './diffModel';
@@ -196,6 +198,7 @@ export default function App() {
   const [mdStatus, setMdStatus] = useState<MdStatus | null>(null);
   const mdActions = useRef<MdActions | null>(null);
   const [mdIncoming, setMdIncoming] = useState<{ id: number; name: string; text: string } | null>(null);
+  const [mmdIncoming, setMmdIncoming] = useState<{ id: number; name: string; text: string } | null>(null);
   const openPicker = useRef<HTMLInputElement>(null);
   const remember = (kind: Exclude<Tool, 'home'>, label: string) => setRecent(addRecent(kind, label));
 
@@ -445,6 +448,7 @@ export default function App() {
     const archives = files.filter(f => is(f, /\.(jar|war|ear)$/));
     const jfr = files.find(f => is(f, /\.jfr$/));
     const md = files.find(f => is(f, /\.(md|markdown)$/));
+    const mmd = files.find(f => is(f, /\.(mmd|mermaid)$/));
     setJobError(null);
     if (archives.length >= 2) {
       setJar1File(archives[0]);
@@ -465,8 +469,14 @@ export default function App() {
         remember('markdown', md.name);
         setMode('markdown');
       });
+    } else if (mmd) {
+      mmd.text().then(text => {
+        setMmdIncoming({ id: Date.now(), name: mmd.name, text });
+        remember('diagram', mmd.name);
+        setMode('diagram');
+      });
     } else {
-      return `${files.length === 1 ? files[0].name : `None of these ${files.length} files`} can't be opened here. Use .jar, .war, .ear, .jfr or .md.`;
+      return `${files.length === 1 ? files[0].name : `None of these ${files.length} files`} can't be opened here. Use .jar, .war, .ear, .jfr, .md, .mmd or .mermaid.`;
     }
     return null;
   };
@@ -1812,6 +1822,17 @@ export default function App() {
           actionsRef={mdActions}
         />
       )}
+
+      {/* ── Results: DIAGRAM (Mermaid-only editor) ── */}
+      <Suspense fallback={<div className="dg-empty">Loading…</div>}>
+        {mode === 'diagram' && (
+          <MermaidView
+            key={mmdIncoming?.id ?? 'draft'}
+            theme={theme}
+            incoming={mmdIncoming}
+          />
+        )}
+      </Suspense>
       </main>
 
       <StatusBar

@@ -7,13 +7,14 @@ import { timeAgo, type RecentItem, type RecentKind } from './recent';
 // extension, pick a tool, see what you opened recently (names only), the
 // keyboard shortcuts, and the state of the in-browser engine.
 
-const GLYPH: Record<RecentKind, string> = { compare: '±', decompile: '{}', profile: '▲', markdown: '#' };
+const GLYPH: Record<RecentKind | Exclude<Tool, 'home'>, string> = { compare: '±', decompile: '{}', profile: '▲', markdown: '#', diagram: '~' };
 
-const BLURB: Record<RecentKind, { text: string; exts: string }> = {
+const BLURB: Record<RecentKind | Exclude<Tool, 'home'>, { text: string; exts: string }> = {
   compare: { text: 'Diff two builds class by class, with decompiled source side by side', exts: 'jar war ear' },
   decompile: { text: 'Turn bytecode back into Java, browse it, download sources.zip', exts: 'jar war ear' },
   profile: { text: 'Hot methods and a flame graph from a Flight Recorder file', exts: 'jfr' },
   markdown: { text: 'Write docs with live Mermaid diagrams you can trace and export', exts: 'md' },
+  diagram: { text: 'Paste Mermaid code, see it live, and edit the drawing by hand', exts: 'mmd' },
 };
 
 export interface Shortcut { label: string; keys: string[] }
