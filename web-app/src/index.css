@@ -2255,6 +2255,10 @@ kbd {
 .cv-icon:disabled { opacity: 0.4; cursor: default; }
 .cv-change { font-family: var(--font-mono); font-size: 0.75rem; color: var(--text-muted); white-space: nowrap; }
 .cv-copy { height: 28px; font-size: 0.78125rem; }
+.cv-ai { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
+.cv-ai .wb-btn { height: 24px; padding: 0 8px; font-size: 0.75rem; }
+.cv-head { position: relative; }
+.cv-ai-ok { position: absolute; right: 12px; top: calc(100% + 2px); z-index: 6; padding: 3px 10px; border-radius: 6px; background: var(--raised); border: 1px solid var(--line); color: var(--text-muted); font-family: var(--font-mono); font-size: 0.72rem; white-space: nowrap; pointer-events: none; }
 .cv-note { padding: 8px 16px; border-bottom: 1px solid var(--line); background: var(--purple-bg); font-size: 0.8125rem; }
 .cv-note b { font-family: var(--font-mono); font-weight: 600; }
 
@@ -2279,7 +2283,7 @@ kbd {
 @media (max-width: 720px) {
   .cv { flex-direction: column; }
   .cv-side { width: auto; max-height: 38%; border-right: none; border-bottom: 1px solid var(--line); }
-  .cv-copy { display: none; }
+  .cv-copy, .cv-ai .wb-btn { display: none; }
 }
 
 /* ══ Decompile browser ═════════════════════════════════════════════════════ */

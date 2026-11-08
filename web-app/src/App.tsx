@@ -20,6 +20,7 @@ import MarkdownWorkspace, { type MdActions, type MdStatus } from './MarkdownWork
 import Intake from './Intake';
 import CompareView, { type CompareCommands, type CompareStatus } from './CompareView';
 import { allEntries, CHANGE_META, CHANGE_OF, type DiffResult } from './diffModel';
+import { buildAiExport } from './diffExport';
 import CommandPalette, { type PaletteItem } from './CommandPalette';
 import { kindOf, letterFor, packageOf, parseOutline, parseManifest, splitArchive, type SourceKind } from './decompileModel';
 import { ArrowLeft, ArrowRight, GitCompare, FileDown, ClipboardCopy } from 'lucide-react';
@@ -1412,6 +1413,11 @@ export default function App() {
     if (mode === 'markdown') {
       add('Save .md', 'markdown', () => mdActions.current?.save(), `${MOD}S`);
       add('Export HTML', 'markdown', () => mdActions.current?.exportHtml());
+    }
+    if (mode === 'compare' && diffResult) {
+      add('Copy comparison as AI context', 'compare', () => {
+        void navigator.clipboard?.writeText(buildAiExport(diffResult, jar1File?.name ?? 'a.jar', jar2File?.name ?? 'b.jar'));
+      });
     }
     for (const t of TOOLS) if (t.id !== mode) add(`Switch to ${t.name}`, 'tools', () => switchMode(t.id), t.key);
     if (mode !== 'home') add('Go home', 'tools', () => switchMode('home'));

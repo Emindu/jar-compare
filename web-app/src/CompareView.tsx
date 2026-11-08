@@ -3,8 +3,9 @@ import ReactDiffViewer, { DiffMethod } from 'react-diff-viewer-continued';
 import { PrismLight as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { oneLight, oneDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { diffLines } from 'diff';
-import { ArrowLeftRight, ChevronUp, ChevronDown, Copy, X, Search } from 'lucide-react';
+import { ArrowLeftRight, ChevronUp, ChevronDown, Copy, Download, Sparkles, X, Search } from 'lucide-react';
 import { CHANGE_META, CHANGE_OF, allEntries, type Change, type DiffResult, type FileStatus } from './diffModel';
+import { buildAiExport } from './diffExport';
 
 // Compare results in the workbench: a tree of changed entries with status
 // filters (left), and tabs, a path bar and a side-by-side or unified diff of
@@ -153,6 +154,28 @@ export default function CompareView({
     const rest = shownTabs.filter((t) => t !== path);
     setTabs(rest);
     if (path === selected) onSelect(rest[Math.min(i, rest.length - 1)] ?? null);
+  };
+
+  // The AI export: one markdown document of every change, for an AI chat.
+  const [aiToast, setAiToast] = useState('');
+  useEffect(() => { if (!aiToast) return; const t = setTimeout(() => setAiToast(''), 2600); return () => clearTimeout(t); }, [aiToast]);
+  const copyAiExport = async () => {
+    const text = buildAiExport(diff, nameA, nameB);
+    try {
+      await navigator.clipboard?.writeText(text);
+      setAiToast(`✓ Copied ${kb(text.length)} of AI context`);
+    } catch {
+      setAiToast('Copy failed — use the download instead');
+    }
+  };
+  const downloadAiExport = () => {
+    const text = buildAiExport(diff, nameA, nameB);
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([text], { type: 'text/markdown' }));
+    a.download = `jar-compare-${nameA.replace(/\.jar.*/i, '')}-vs-${nameB.replace(/\.jar.*/i, '')}.ai.md`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+    setAiToast(`✓ Downloaded ${kb(text.length)} of AI context`);
   };
 
   const status = selected ? statusOf.get(selected) ?? null : null;
@@ -363,6 +386,11 @@ export default function CompareView({
             <span className="g-del">−{counts.del} removed</span>
             <span className="g-mod">~{counts.mod} modified</span>
             <span className="g-same">≡{counts.same} same source</span>
+          </span>
+          <span className="cv-ai" role="group" aria-label="Export for AI">
+            <button className="wb-btn" onClick={copyAiExport} title="Copy the whole comparison as markdown (summary, lists and source diffs) — paste it into an AI chat as context"><Sparkles size={13} /> AI</button>
+            <button className="wb-btn" onClick={downloadAiExport} title="Download the same AI export as a .md file"><Download size={13} /></button>
+            {aiToast && <span className="cv-ai-ok" role="status">{aiToast}</span>}
           </span>
         </header>
 
