@@ -1,4 +1,5 @@
 import { lazy, Suspense, useEffect, useRef } from 'react';
+import { chartKindOf } from './chartModel';
 import { graphKindOf } from './graphModel';
 import { isFlowchart, type Theme } from './mermaidSource';
 
@@ -9,6 +10,7 @@ import { isFlowchart, type Theme } from './mermaidSource';
 const FlowEditor = lazy(() => import('./FlowEditor'));
 const SeqEditor = lazy(() => import('./SeqEditor'));
 const GraphEditor = lazy(() => import('./GraphEditor'));
+const ChartEditor = lazy(() => import('./ChartEditor'));
 
 export default function DiagramEditor({ code, theme, getRendered, onSave, onClose }: {
   code: string;
@@ -21,6 +23,7 @@ export default function DiagramEditor({ code, theme, getRendered, onSave, onClos
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => { ref.current?.focus({ preventScroll: true }); }, []);
   const kind = graphKindOf(code);
+  const chart = chartKindOf(code);
   return (
     <div className="qo-overlay md-modal-overlay dge-overlay" onPointerDown={(e) => e.stopPropagation()} onClick={(e) => e.stopPropagation()}>
       <div className="md-modal dge" ref={ref} tabIndex={-1} role="dialog" aria-label="Edit diagram">
@@ -29,6 +32,8 @@ export default function DiagramEditor({ code, theme, getRendered, onSave, onClos
             <FlowEditor code={code} theme={theme} getRendered={getRendered} onSave={onSave} onClose={onClose} />
           ) : kind ? (
             <GraphEditor code={code} kind={kind} theme={theme} onSave={onSave} onClose={onClose} />
+          ) : chart ? (
+            <ChartEditor code={code} kind={chart} theme={theme} onSave={onSave} onClose={onClose} />
           ) : (
             <SeqEditor code={code} theme={theme} onSave={onSave} onClose={onClose} />
           )}

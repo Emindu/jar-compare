@@ -1,6 +1,7 @@
 import { lazy, Suspense, useContext, useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { ChevronDown, Maximize2, Pause, PenLine, Play, SkipBack, SkipForward, SlidersHorizontal, StepBack, StepForward, X } from 'lucide-react';
 import { DiagramEdit, DiagramLinks, type DiagramEntry } from './diagramLinks';
+import { chartKindOf } from './chartModel';
 import { graphKindOf } from './graphModel';
 import { hasLayout, parseFlow, stripLayout } from './flowModel';
 import { buildScene, sceneSvg } from './flowScene';
@@ -605,7 +606,7 @@ export function MermaidBlock({ code, theme, name }: { code: string; theme: Theme
   const flow = isFlowchart(code);
   // Flowcharts with hand-placed positions are drawn by our own renderer.
   const free = flow && hasLayout(code);
-  const editable = !!edit && (flow || kind === 'sequenceDiagram' || graphKindOf(code) !== null);
+  const editable = !!edit && (flow || kind === 'sequenceDiagram' || graphKindOf(code) !== null || chartKindOf(code) !== null);
   // A stable object: React 19 re-applies innerHTML whenever this object changes,
   // which would wipe the highlight classes set on the SVG.
   const html = useMemo(() => ({ __html: svg }), [svg]);

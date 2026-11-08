@@ -17,14 +17,17 @@ import JSZip from 'jszip';
 import { parseJfr, type JfrResult } from './jfr';
 import Profiler, { type ProfileStatus } from './Profiler';
 import MarkdownWorkspace, { type MdActions, type MdStatus } from './MarkdownWorkspace';
+import { lazy, Suspense } from 'react';
+const MermaidView = lazy(() => import('./MermaidView'));
 import Intake from './Intake';
 import CompareView, { type CompareCommands, type CompareStatus } from './CompareView';
 import { allEntries, CHANGE_META, CHANGE_OF, type DiffResult } from './diffModel';
+import { buildAiExport } from './diffExport';
 import CommandPalette, { type PaletteItem } from './CommandPalette';
 import { kindOf, letterFor, packageOf, parseOutline, parseManifest, splitArchive, type SourceKind } from './decompileModel';
 import { ArrowLeft, ArrowRight, GitCompare, FileDown, ClipboardCopy } from 'lucide-react';
 import Home from './Home';
-import { TitleBar, ActivityBar, StatusBar, ThemeButton } from './Workbench';
+import { TitleBar, ActivityBar, StatusBar, FontControl, ThemeButton } from './Workbench';
 import { IS_MAC, MOD, TOOLS, type Tool, type JvmState } from './shell';
 import { loadRecent, addRecent, clearRecent, type RecentItem } from './recent';
 import { Download, RotateCcw, ExternalLink, Search, X } from 'lucide-react';
@@ -195,6 +198,7 @@ export default function App() {
   const [mdStatus, setMdStatus] = useState<MdStatus | null>(null);
   const mdActions = useRef<MdActions | null>(null);
   const [mdIncoming, setMdIncoming] = useState<{ id: number; name: string; text: string } | null>(null);
+  const [mmdIncoming, setMmdIncoming] = useState<{ id: number; name: string; text: string } | null>(null);
   const openPicker = useRef<HTMLInputElement>(null);
   const remember = (kind: Exclude<Tool, 'home'>, label: string) => setRecent(addRecent(kind, label));
 
@@ -208,6 +212,20 @@ export default function App() {
     } catch { /* storage unavailable */ }
     return window.matchMedia?.('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
   });
+
+  // page-wide font size, remembered alongside the theme ("fontScale" entry)
+  const [fontScale, setFontScaleRaw] = useState(() => {
+    try {
+      const v = parseFloat(localStorage.getItem('fontScale') ?? '');
+      if (Number.isFinite(v) && v >= 0.8 && v <= 1.4) return v;
+    } catch { /* storage unavailable */ }
+    return 1;
+  });
+  useEffect(() => {
+    document.documentElement.style.setProperty('--font-scale', String(fontScale));
+    try { localStorage.setItem('fontScale', String(fontScale)); } catch { /* storage unavailable */ }
+  }, [fontScale]);
+  const nudgeFontScale = (d: number) => setFontScaleRaw((s) => Math.min(1.4, Math.max(0.8, Math.round((s + d) * 20) / 20)));
 
   // compare state
   const [jar1File, setJar1File] = useState<File | null>(null);
@@ -430,6 +448,7 @@ export default function App() {
     const archives = files.filter(f => is(f, /\.(jar|war|ear)$/));
     const jfr = files.find(f => is(f, /\.jfr$/));
     const md = files.find(f => is(f, /\.(md|markdown)$/));
+    const mmd = files.find(f => is(f, /\.(mmd|mermaid)$/));
     setJobError(null);
     if (archives.length >= 2) {
       setJar1File(archives[0]);
@@ -450,8 +469,14 @@ export default function App() {
         remember('markdown', md.name);
         setMode('markdown');
       });
+    } else if (mmd) {
+      mmd.text().then(text => {
+        setMmdIncoming({ id: Date.now(), name: mmd.name, text });
+        remember('diagram', mmd.name);
+        setMode('diagram');
+      });
     } else {
-      return `${files.length === 1 ? files[0].name : `None of these ${files.length} files`} can't be opened here. Use .jar, .war, .ear, .jfr or .md.`;
+      return `${files.length === 1 ? files[0].name : `None of these ${files.length} files`} can't be opened here. Use .jar, .war, .ear, .jfr, .md, .mmd or .mermaid.`;
     }
     return null;
   };
@@ -1399,9 +1424,17 @@ export default function App() {
       add('Save .md', 'markdown', () => mdActions.current?.save(), `${MOD}S`);
       add('Export HTML', 'markdown', () => mdActions.current?.exportHtml());
     }
+    if (mode === 'compare' && diffResult) {
+      add('Copy comparison as AI context', 'compare', () => {
+        void navigator.clipboard?.writeText(buildAiExport(diffResult, jar1File?.name ?? 'a.jar', jar2File?.name ?? 'b.jar'));
+      });
+    }
     for (const t of TOOLS) if (t.id !== mode) add(`Switch to ${t.name}`, 'tools', () => switchMode(t.id), t.key);
     if (mode !== 'home') add('Go home', 'tools', () => switchMode('home'));
     add('Open file…', 'file', () => openPicker.current?.click(), `${MOD}O`);
+    add('Increase page text size', 'view', () => nudgeFontScale(0.05));
+    add('Decrease page text size', 'view', () => nudgeFontScale(-0.05));
+    add('Reset page text size', 'view', () => setFontScaleRaw(1));
     add('Toggle light / dark theme', 'view', toggleTheme, `${SHIFT_MOD}L`);
     return out;
   };
@@ -1443,6 +1476,7 @@ export default function App() {
           </button>
         </>
       )}
+      <FontControl scale={fontScale} onSet={setFontScaleRaw} />
       <ThemeButton theme={theme} onToggle={toggleTheme} />
     </>
   );
@@ -1690,7 +1724,7 @@ export default function App() {
                         wrapLongLines={false}
                         wrapLines
                         lineProps={(n: number) => ({ id: LINE_ID(n) })}
-                        customStyle={{ margin: 0, background: 'transparent', padding: '12px 0', fontSize: '13px', lineHeight: '21px' }}
+                        customStyle={{ margin: 0, background: 'transparent', padding: '12px 0', fontSize: '0.8125rem', lineHeight: '1.3125rem' }}
                         codeTagProps={{ style: { fontFamily: 'var(--font-mono)' } }}
                         lineNumberStyle={{ color: 'var(--text-faint)', minWidth: '3.5em', paddingRight: '1.4em', textAlign: 'right', fontStyle: 'normal' }}
                       >
@@ -1788,6 +1822,17 @@ export default function App() {
           actionsRef={mdActions}
         />
       )}
+
+      {/* ── Results: DIAGRAM (Mermaid-only editor) ── */}
+      <Suspense fallback={<div className="dg-empty">Loading…</div>}>
+        {mode === 'diagram' && (
+          <MermaidView
+            key={mmdIncoming?.id ?? 'draft'}
+            theme={theme}
+            incoming={mmdIncoming}
+          />
+        )}
+      </Suspense>
       </main>
 
       <StatusBar
@@ -1838,7 +1883,7 @@ export default function App() {
         ref={openPicker}
         type="file"
         multiple
-        accept=".jar,.war,.ear,.jfr,.md,.markdown"
+        accept=".jar,.war,.ear,.jfr,.md,.markdown,.mmd,.mermaid"
         hidden
         onChange={e => {
           const err = routeFiles([...(e.target.files ?? [])]);

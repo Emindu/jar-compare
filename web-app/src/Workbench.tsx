@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { House, Moon, Sun, type LucideIcon } from 'lucide-react';
+import { House, Minus, Moon, Plus, Sun, type LucideIcon } from 'lucide-react';
 import { TOOLS, type Tool, type JvmState } from './shell';
 
 // The workbench shell: a title bar (brand, breadcrumb, actions), an activity
@@ -34,6 +34,21 @@ export function TitleBar({
       <div className="wb-title-center">{center}</div>
       <div className="wb-title-right">{actions}</div>
     </header>
+  );
+}
+
+/** Page-wide text size: smaller / the current percentage (click to reset) / larger. */
+export function FontControl({ scale, onSet }: { scale: number; onSet: (next: number) => void }) {
+  const step = (d: number) => {
+    const next = Math.round((scale + d) * 20) / 20;
+    onSet(Math.min(1.4, Math.max(0.8, next)));
+  };
+  return (
+    <span className="wb-font-ctl">
+      <button className="wb-icon-btn" onClick={() => step(-0.05)} title="Decrease page text size" aria-label="Decrease page text size"><Minus size={15} /></button>
+      <button className="wb-font-pct" onClick={() => onSet(1)} title="Reset page text size to 100%" aria-label="Reset page text size to 100%">{Math.round(scale * 100)}%</button>
+      <button className="wb-icon-btn" onClick={() => step(0.05)} title="Increase page text size" aria-label="Increase page text size"><Plus size={15} /></button>
+    </span>
   );
 }
 

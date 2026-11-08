@@ -88,6 +88,14 @@ function nodesIn(m: FlowModel, sub: string): string[] {
   return m.nodes.filter((n) => ancestors(m, n.id).includes(sub)).map((n) => n.id);
 }
 
+/** True when the same key was pressed within 400ms of the previous one. */
+function tapTwice(taps: { current: { k: string; t: number } | null }, k: string): boolean {
+  const now = performance.now();
+  const hit = taps.current?.k === k && now - taps.current.t < 400;
+  taps.current = hit ? null : { k, t: now };
+  return hit;
+}
+
 export default function FlowEditor({ code, theme, getRendered, onSave, onClose }: {
   code: string;
   theme: Theme;
@@ -283,13 +291,29 @@ export default function FlowEditor({ code, theme, getRendered, onSave, onClose }
     if (!m) return;
     const orig: Record<string, Point> = {};
     ids.forEach((id) => { if (m.pos[id]) orig[id] = m.pos[id]; });
-    (e.currentTarget as Element).setPointerCapture?.(e.pointerId);
+    // No pointer capture yet: taking it right away retargets pointerup to this
+    // group, and the browser then drops the click/dblclick pair — so an
+    // in-place rename would never open. Capture in onMove once the drag starts.
     setDrag({ kind: 'move', ids, start: toDiagram(e), orig, before: m, moved: false });
   };
+
+  // A node redraws its inner markup on every render (innerHTML), which can
+  // break the browser's click pairing mid-press — so double-click on a node is
+  // detected from the presses themselves, not from dblclick events.
+  const lastDown = useRef<{ k: string; t: number } | null>(null);
+  const isDoubleTap = (k: string) => tapTwice(lastDown, k);
 
   const onNodeDown = (e: React.PointerEvent, id: string) => {
     if (e.button !== 0) return;
     e.stopPropagation();
+    const dbl = !e.shiftKey && !e.metaKey && !e.ctrlKey && isDoubleTap('node:' + id);
+    if (dbl) {
+      const n = m?.nodes.find((x) => x.id === id);
+      // Open after this press's mouse-event barrage: the compat mousedown of
+      // the very same double-tap would blur (and commit) an input mounted now.
+      window.setTimeout(() => setRename({ kind: 'node', id, value: n?.label ?? '' }), 0);
+      return;
+    }
     setRename(null);
     let nodes = sel.nodes;
     if (e.shiftKey || e.metaKey || e.ctrlKey) nodes = nodes.includes(id) ? nodes.filter((x) => x !== id) : [...nodes, id];
@@ -328,7 +352,12 @@ export default function FlowEditor({ code, theme, getRendered, onSave, onClose }
     if (drag.kind === 'move') {
       const dx = at.x - drag.start.x, dy = at.y - drag.start.y;
       if (!drag.moved && Math.hypot(dx, dy) < 3) return;
-      if (!drag.moved) setDrag({ ...drag, moved: true });
+      if (!drag.moved) {
+        // The drag is really happening: take the pointer now so it stays with
+        // the drawing even when the cursor leaves the canvas.
+        svgRef.current?.setPointerCapture?.(e.pointerId);
+        setDrag({ ...drag, moved: true });
+      }
       setHist((h) => {
         if (!h.m) return h;
         const pos = { ...h.m.pos };
@@ -423,7 +452,10 @@ export default function FlowEditor({ code, theme, getRendered, onSave, onClose }
   // Rename box position, in stage pixels.
   const renameBox = (() => {
     if (!rename) return null;
-    if (rename.kind === 'node') { const n = sceneNode(rename.id); return n ? { x: n.x, y: n.y, w: Math.max(n.w, 140) } : null; }
+    if (rename.kind === 'node') {
+      const n = sceneNode(rename.id);
+      return n ? { x: n.x, y: n.y, w: Math.max(n.w, 140) } : null;
+    }
     if (rename.kind === 'sub') { const s = scene.subs.find((x) => x.id === rename.id); return s ? { x: s.x, y: s.y - s.h / 2 + 15, w: Math.max(s.w * 0.7, 140) } : null; }
     const e = scene.edges.find((x) => x.index === rename.index);
     return e ? { x: e.lx, y: e.ly, w: 160 } : null;
